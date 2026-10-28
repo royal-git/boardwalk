@@ -37,10 +37,10 @@ struct DockView: View {
     private var tileRow: some View {
         let tiles = model.tiles(onDesktop: desktopID)
         return HStack(alignment: .bottom, spacing: 6) {
-            ForEach(tiles.apps) { TileView(tile: $0, size: Self.tileSize) }
+            ForEach(tiles.apps) { TileView(tile: $0, size: Self.tileSize, desktopID: desktopID) }
             if !tiles.others.isEmpty {
                 Separator()
-                ForEach(tiles.others) { TileView(tile: $0, size: Self.tileSize) }
+                ForEach(tiles.others) { TileView(tile: $0, size: Self.tileSize, desktopID: desktopID) }
             }
             if tiles.apps.isEmpty && tiles.others.isEmpty {
                 Text("Drop apps, folders or links here")
@@ -102,6 +102,7 @@ private struct TileView: View {
     @EnvironmentObject private var model: AppModel
     let tile: DockTile
     let size: CGFloat
+    let desktopID: Int
     @State private var hovering = false
 
     var body: some View {
@@ -110,6 +111,10 @@ private struct TileView: View {
         } label: {
             VStack(spacing: 3) {
                 ItemIcon(item: tile.item, size: size)
+                    .overlay(alignment: .topTrailing) {
+                        // Folders and links are always kept, so only apps need telling apart.
+                        if tile.pinned && tile.item.kind == .app { PinBadge() }
+                    }
                     .scaleEffect(hovering ? 1.15 : 1, anchor: .bottom)
                     .opacity(tile.app?.isHidden == true ? 0.55 : 1)
                 RunningDot(app: tile.app, hasWindowHere: tile.hasWindowHere)
@@ -125,13 +130,48 @@ private struct TileView: View {
     }
 
     @ViewBuilder private var menu: some View {
+        if let here = model.space(onDesktop: desktopID) {
+            Toggle("Keep in Dock", isOn: Binding(
+                get: { model.isPinned(tile.item, in: here) },
+                set: { model.setPinned(tile.item, $0, in: here) }
+            ))
+        }
         if tile.item.kind != .url {
             Button("Show in Finder") { model.showInFinder(tile.item) }
+        }
+        // Open apps show wherever they have windows anyway; this is for when they're not.
+        Menu("Keep in Dock on") {
+            Toggle("All Desktops", isOn: Binding(
+                get: { model.isShared(tile.item) },
+                set: { model.setShared(tile.item, $0) }
+            ))
+            Divider()
+            ForEach(Array(model.library.spaces.prefix(model.desktopCount).enumerated()), id: \.element.id) { index, space in
+                Toggle("Desktop \(index + 1): \(space.name)", isOn: Binding(
+                    get: { model.isPinned(tile.item, in: space) },
+                    set: { model.setPinned(tile.item, $0, in: space) }
+                ))
+            }
         }
         if tile.app != nil {
             Divider()
             Button("Quit") { model.quit(tile) }
         }
+    }
+}
+
+/// Marks an app kept in this desktop's dock, as opposed to one that's only there
+/// because it's open.
+private struct PinBadge: View {
+    var body: some View {
+        Image(systemName: "pin.fill")
+            .font(.system(size: 7, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 14, height: 14)
+            .background(Circle().fill(Color.accentColor))
+            .overlay(Circle().strokeBorder(Color.black.opacity(0.15)))
+            .offset(x: 3, y: -3)
+            .accessibilityHidden(true)
     }
 }
 

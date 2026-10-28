@@ -83,6 +83,33 @@ final class SpaceLibraryTests: XCTestCase {
 }
 
 final class PinningTests: XCTestCase {
+    func testUnpinSharedItemKeepsItOnOtherDesktops() {
+        let work = Space(name: "Work")
+        let play = Space(name: "Play")
+        var library = SpaceLibrary(spaces: [work, play], sharedItems: [.folder("/Users/me/Downloads")])
+
+        library.unpin(.folder("/Users/me/Downloads"), from: work.id)
+
+        XCTAssertTrue(library.sharedItems.isEmpty)
+        XCTAssertTrue(library.spaces[0].items.isEmpty)
+        XCTAssertEqual(library.spaces[1].items.map(\.location), ["/Users/me/Downloads"])
+    }
+
+    func testShareThenUnshareKeepsOneDesktop() {
+        let work = Space(name: "Work", items: [.app("/Applications/Slack.app")])
+        let play = Space(name: "Play")
+        var library = SpaceLibrary(spaces: [work, play])
+
+        library.share(.app("/Applications/Slack.app"))
+        XCTAssertEqual(library.sharedItems.count, 1)
+        XCTAssertTrue(library.spaces[0].items.isEmpty, "not listed twice")
+
+        library.unshare(.app("/Applications/Slack.app"), keepingIn: play.id)
+        XCTAssertTrue(library.sharedItems.isEmpty)
+        XCTAssertTrue(library.spaces[0].items.isEmpty)
+        XCTAssertEqual(library.spaces[1].items.map(\.location), ["/Applications/Slack.app"])
+    }
+
     func testPinKeepsItemElsewhere() {
         let work = Space(name: "Work", items: [.app("/Applications/Slack.app")])
         let play = Space(name: "Play")

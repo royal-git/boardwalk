@@ -194,6 +194,31 @@ final class AppModel: ObservableObject {
         library.pin(item, in: id)
     }
 
+    func isShared(_ item: DockItem) -> Bool {
+        library.sharedItems.contains { $0.identityKey == item.identityKey }
+    }
+
+    /// On every desktop's dock, or (turning it off) just this desktop's.
+    func setShared(_ item: DockItem, _ shared: Bool) {
+        if shared {
+            library.share(item)
+        } else if let id = library.activeSpaceID {
+            library.unshare(item, keepingIn: id)
+        }
+    }
+
+    func isPinned(_ item: DockItem, in space: Space) -> Bool {
+        library.resolvedItems(for: space).contains { $0.identityKey == item.identityKey }
+    }
+
+    func setPinned(_ item: DockItem, _ pinned: Bool, in space: Space) {
+        if pinned {
+            library.pin(item, in: space.id)
+        } else {
+            library.unpin(item, from: space.id)
+        }
+    }
+
     /// Files, folders, apps or links dropped onto the dock join this desktop's dock.
     func addHere(_ urls: [URL]) {
         for url in urls {

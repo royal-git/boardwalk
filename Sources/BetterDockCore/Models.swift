@@ -155,6 +155,36 @@ public struct SpaceLibrary: Codable, Hashable {
         }
     }
 
+    /// Take an item off `spaceID`'s dock. A shared item stays on every other desktop.
+    public mutating func unpin(_ item: DockItem, from spaceID: UUID) {
+        let key = item.identityKey
+        if sharedItems.contains(where: { $0.identityKey == key }) {
+            sharedItems.removeAll { $0.identityKey == key }
+            for space in spaces where space.id != spaceID { pin(item, in: space.id) }
+        }
+        if let i = index(of: spaceID) {
+            spaces[i].items.removeAll { $0.identityKey == key }
+        }
+    }
+
+    /// Put an item on every desktop's dock.
+    public mutating func share(_ item: DockItem) {
+        let key = item.identityKey
+        for i in spaces.indices { spaces[i].items.removeAll { $0.identityKey == key } }
+        guard !sharedItems.contains(where: { $0.identityKey == key }) else { return }
+        sharedItems.append(DockItem(kind: item.kind, location: item.location, label: item.label))
+    }
+
+    /// Take an item off every desktop's dock but `spaceID`'s.
+    public mutating func unshare(_ item: DockItem, keepingIn spaceID: UUID) {
+        let key = item.identityKey
+        sharedItems.removeAll { $0.identityKey == key }
+        for i in spaces.indices where spaces[i].id != spaceID {
+            spaces[i].items.removeAll { $0.identityKey == key }
+        }
+        pin(item, in: spaceID)
+    }
+
     /// Add an item to `spaceID`'s dock, leaving it wherever else it is.
     public mutating func pin(_ item: DockItem, in spaceID: UUID) {
         guard let i = index(of: spaceID),
