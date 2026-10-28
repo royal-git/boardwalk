@@ -2,6 +2,11 @@
 
 A different dock for each macOS desktop, like Arc's spaces for the Mac dock. Desktop 1 can hold your work apps, folders and links, and Desktop 2 your personal ones. Switch desktops the usual way (four-finger swipe or ⌃← →) and the dock changes with you right away. macOS already keeps each desktop's windows apart, and BetterDock gives each one its own dock to match.
 
+![Desktop 1's dock: pinned apps with pin badges, open apps, and Downloads](docs/dock-desktop-1.png)
+![Desktop 2's dock, with different apps for that desktop](docs/dock-desktop-2.png)
+
+*Two desktops on one Mac, each with its own dock. A pin badge marks apps kept in that desktop's dock. A filled dot means the app has a window on this desktop, and a hollow dot means it's running without one here.*
+
 BetterDock draws its own dock. It doesn't edit Apple's Dock, because Apple's Dock can only change its icons by restarting, and that makes it blink. Apple's Dock is also the same on every desktop.
 
 ## What it does
