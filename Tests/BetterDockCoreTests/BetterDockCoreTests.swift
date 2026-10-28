@@ -240,3 +240,181 @@ final class ArrowComboTests: XCTestCase {
         XCTAssertEqual(combo.press(.right), .rightHalf)
     }
 }
+
+final class StripTests: XCTestCase {
+    let display = CGRect(x: 0, y: 0, width: 1512, height: 982)
+
+    func window(_ id: Int, _ frame: CGRect?) -> (window: Strip.Window, frame: CGRect?) {
+        (Strip.Window(id: id, bundleID: "app\(id)"), frame)
+    }
+
+    func ids(_ columns: [Strip.Column]) -> [[Int]] {
+        columns.map { $0.windows.map(\.id) }
+    }
+
+    func testStackedWindowsShareAColumn() {
+        let columns = Strip.columns(of: [
+            window(1, CGRect(x: 0, y: 33, width: 756, height: 864)),
+            window(2, CGRect(x: 756, y: 33, width: 756, height: 432)),
+            window(3, CGRect(x: 756, y: 465, width: 756, height: 432)),
+        ], display: display)
+        XCTAssertEqual(ids(columns), [[1], [2, 3]])
+    }
+
+    func testWindowsPiledOffScreenStaySeparateUnlessStacked() {
+        // Off screen, Paneru leaves every column's sliver at the same edge.
+        let columns = Strip.columns(of: [
+            window(1, CGRect(x: 1507, y: 33, width: 756, height: 864)),
+            window(2, CGRect(x: 1507, y: 33, width: 756, height: 864)),
+            window(3, CGRect(x: 1507, y: 33, width: 756, height: 432)),
+            window(4, CGRect(x: 1507, y: 465, width: 756, height: 432)),
+            window(5, CGRect(x: 1507, y: 33, width: 756, height: 864)),
+        ], display: display)
+        XCTAssertEqual(ids(columns), [[1], [2], [3, 4], [5]])
+    }
+
+    func testInViewMeansMostlyShowingOrFillingAThirdOfTheScreen() {
+        let columns = Strip.columns(of: [
+            window(1, CGRect(x: -751, y: 33, width: 756, height: 864)),
+            window(2, CGRect(x: -40, y: 33, width: 750, height: 864)),
+            window(3, CGRect(x: 1306, y: 33, width: 756, height: 864)),
+            window(4, nil),
+        ], display: display)
+        XCTAssertEqual(columns.map(\.isInView), [false, true, false, false])
+        XCTAssertEqual(ids(columns), [[1], [2], [3], [4]], "a window without a frame gets a column of its own")
+
+        let wide = Strip.columns(of: [window(5, CGRect(x: -864, y: 33, width: 1512, height: 864))], display: display)
+        XCTAssertEqual(wide.map(\.isInView), [true], "less than half of it, but 648 points of screen")
+    }
+
+    func testMovingAColumnKeepsTheOthersInOrder() {
+        func column(_ ids: Int...) -> Strip.Column {
+            Strip.Column(windows: ids.map { Strip.Window(id: $0, bundleID: "") }, isInView: false)
+        }
+        let strip = Strip(columns: [column(1), column(2, 3), column(4), column(5)])
+        XCTAssertEqual(strip.column(of: 3), 1)
+        XCTAssertNil(strip.column(of: 9))
+
+        let moved = strip.moving(columnOf: 1, to: 2)
+        XCTAssertEqual(ids(moved.columns), [[2, 3], [4], [1], [5]])
+        XCTAssertEqual(moved.moving(columnOf: 1, to: 2), moved, "already there")
+        XCTAssertEqual(ids(strip.moving(columnOf: 3, to: 0).columns), [[2, 3], [1], [4], [5]], "a stack moves whole")
+        XCTAssertEqual(ids(strip.moving(columnOf: 4, to: 9).columns), [[1], [2, 3], [5], [4]], "past the end is the end")
+        XCTAssertEqual(strip.moving(columnOf: 9, to: 0), strip)
+    }
+}
+
+final class PaneruStateTests: XCTestCase {
+    func testReadsEachDesktopsStrip() throws {
+        func window(_ id: Int, _ bundle: String, floating: Bool = false, _ frame: String) -> String {
+            #"{"window_id":\#(id),"bundle_id":"\#(bundle)","app_name":"","title":"","focused":false,"floating":\#(floating),"display_id":1,"frame":\#(frame),"visible":true}"#
+        }
+        let json = """
+        {"version":1,"timestamp":1,"active":{"display_id":1,"native_workspace_id":3,"virtual_workspace_number":1},
+         "virtual_workspaces":[
+          {"number":1,"native_workspace_id":3,"active":true,"windows":[
+            \(window(10, "com.mitchellh.ghostty", #"{"x":0,"y":33,"width":756,"height":864}"#)),
+            \(window(11, "company.thebrowser.dia", #"{"x":756,"y":33,"width":756,"height":432}"#)),
+            \(window(12, "com.spotify.client", #"{"x":756,"y":465,"width":756,"height":432}"#)),
+            \(window(13, "dev.zed.Zed", #"{"x":1507,"y":33,"width":756,"height":864}"#)),
+            \(window(14, "com.apple.systempreferences", floating: true, #"{"x":200,"y":100,"width":700,"height":500}"#))
+          ]},
+          {"number":2,"native_workspace_id":3,"active":false,"windows":[]},
+          {"number":1,"native_workspace_id":1,"active":false,"windows":[
+            \(window(20, "com.apple.mail", "null"))
+          ]}
+         ]}
+        """
+        let strips = try PaneruState.strips(from: Data(json.utf8), display: CGRect(x: 0, y: 0, width: 1512, height: 982))
+
+        let here = try XCTUnwrap(strips[3])
+        XCTAssertEqual(here.columns.map { $0.windows.map(\.id) }, [[10], [11, 12], [13]], "floating windows aren't in the strip")
+        XCTAssertEqual(here.columns.map(\.isInView), [true, true, false])
+        XCTAssertEqual(here.columns[1].windows[1].bundleID, "com.spotify.client")
+        XCTAssertEqual(strips[1]?.columns.map { $0.windows.map(\.id) }, [[20]])
+    }
+
+    func testReadsEvents() {
+        func event(_ json: String) -> PaneruEvent { PaneruState.event(from: Data(json.utf8)) }
+        XCTAssertEqual(event(#"{"event":"window_title_changed","window_id":3,"title":"x"}"#), .titleChanged)
+        XCTAssertEqual(event(#"{"event":"windows_changed","virtual_workspace_number":1}"#), .other)
+        XCTAssertEqual(event(#"{"event":"window_tit"#), .other, "half a line might be anything")
+        let slid = event("""
+            {"active":{"display_id":1,"native_workspace_id":3,"virtual_workspace_number":1},"event":"on_screen_changed",
+             "windows":[{"app_name":"Ghostty","bundle_id":"com.mitchellh.ghostty","display_id":1,"floating":false,"focused":true,
+                         "frame":{"height":864,"width":756,"x":-40,"y":33},"title":"","visible":true,"window_id":10}]}
+            """)
+        XCTAssertEqual(slid, .onScreen(desktop: 3, frames: [10: CGRect(x: -40, y: 33, width: 756, height: 864)]))
+    }
+
+    func testSlidingUpdatesWhatsInView() {
+        let display = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        func column(_ ids: Int...) -> Strip.Column {
+            Strip.Column(windows: ids.map { Strip.Window(id: $0, bundleID: "") }, isInView: false)
+        }
+        var strip = Strip(columns: [column(1), column(2, 3), column(4)])
+        strip.updateInView(onScreen: [
+            2: CGRect(x: 0, y: 33, width: 756, height: 432),
+            3: CGRect(x: 0, y: 465, width: 756, height: 432),
+            4: CGRect(x: 756, y: 33, width: 756, height: 864),
+        ], display: display)
+        XCTAssertEqual(strip.columns.map(\.isInView), [false, true, true], "windows missing from the list aren't on screen")
+    }
+}
+
+final class ReorderTests: XCTestCase {
+    func testMovesWithinADesktopsOwnItemsAndWithinSharedOnes() {
+        let a = DockItem.app("/Applications/A.app"), b = DockItem.app("/Applications/B.app")
+        let c = DockItem.app("/Applications/C.app"), finder = DockItem.app("/System/Finder.app")
+        let mail = DockItem.app("/Applications/Mail.app")
+        var space = Space(name: "Work", items: [a, b, c])
+        var library = SpaceLibrary(spaces: [space], sharedItems: [finder, mail])
+
+        library.move(c, to: a, in: space.id)
+        XCTAssertEqual(library.spaces[0].items, [c, a, b], "dragged left, it takes the target's place")
+        library.move(c, to: b, in: space.id)
+        XCTAssertEqual(library.spaces[0].items, [a, b, c], "dragged right too")
+
+        library.move(mail, to: finder, in: space.id)
+        XCTAssertEqual(library.sharedItems, [mail, finder])
+
+        library.move(a, to: finder, in: space.id)
+        XCTAssertEqual(library.sharedItems, [mail, finder], "a desktop's item can't go among the shared ones")
+        XCTAssertEqual(library.spaces[0].items, [a, b, c])
+        space = library.spaces[0]
+        _ = space
+    }
+}
+
+final class RowDragTests: XCTestCase {
+    /// A tile, a two-tile stack, then two more tiles, 6 points apart.
+    let frames = [
+        CGRect(x: 0, y: 0, width: 48, height: 48),
+        CGRect(x: 54, y: 0, width: 96, height: 48),
+        CGRect(x: 156, y: 0, width: 48, height: 48),
+        CGRect(x: 210, y: 0, width: 48, height: 48),
+    ]
+
+    func drag(_ index: Int, by offset: CGFloat) -> RowDrag {
+        RowDrag(frames: frames, dragged: index, offset: offset, spacing: 6)
+    }
+
+    func testLandsOncePastTheMiddleOfTheNextItem() {
+        XCTAssertEqual(drag(0, by: 0).destination, 0)
+        XCTAssertEqual(drag(0, by: 70).destination, 0, "the stack's middle is at 102")
+        XCTAssertEqual(drag(0, by: 80).destination, 1)
+        XCTAssertEqual(drag(0, by: 500).destination, 3)
+        XCTAssertEqual(drag(3, by: -60).destination, 2)
+        XCTAssertEqual(drag(3, by: -500).destination, 0)
+    }
+
+    func testPassedItemsMakeRoomTheWayItCame() {
+        let right = drag(0, by: 160)
+        XCTAssertEqual(right.destination, 2)
+        XCTAssertEqual((0..<4).map(right.shift(of:)), [160, -54, -54, 0])
+
+        let left = drag(2, by: -160)
+        XCTAssertEqual(left.destination, 0)
+        XCTAssertEqual((0..<4).map(left.shift(of:)), [54, 54, -160, 0])
+    }
+}

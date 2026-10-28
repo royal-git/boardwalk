@@ -192,6 +192,20 @@ public struct SpaceLibrary: Codable, Hashable {
         spaces[i].items.append(DockItem(kind: item.kind, location: item.location, label: item.label))
     }
 
+    /// Moves an item to where `target` is in `spaceID`'s dock, as when dragging one
+    /// tile onto another. Both must be this desktop's own items, or both shared
+    /// (moving those changes every desktop's dock); anything else is left alone.
+    public mutating func move(_ item: DockItem, to target: DockItem, in spaceID: UUID) {
+        func moved(_ list: inout [DockItem]) -> Bool {
+            guard let from = list.firstIndex(where: { $0.identityKey == item.identityKey }),
+                  let to = list.firstIndex(where: { $0.identityKey == target.identityKey }) else { return false }
+            list.insert(list.remove(at: from), at: to)
+            return true
+        }
+        if moved(&sharedItems) { return }
+        if let i = index(of: spaceID) { _ = moved(&spaces[i].items) }
+    }
+
     /// The full ordered tile list for a space: shared apps first (so Finder stays
     /// put), then the space's own items, then shared folders, files and links,
     /// with duplicates removed.

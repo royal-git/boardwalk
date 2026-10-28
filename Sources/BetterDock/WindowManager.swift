@@ -48,6 +48,16 @@ final class WindowManager {
         }
     }
 
+    /// Makes one of an app's windows its main window, in front of the app's
+    /// others. Doesn't ask for permission: without it, the app's own front
+    /// window stays in front.
+    func raise(window windowID: Int, of app: NSRunningApplication) {
+        guard AXIsProcessTrusted(),
+              let window = standardWindows(of: app.processIdentifier)[CGWindowID(windowID)] else { return }
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    }
+
     // MARK: Finding windows
 
     /// Asks for permission the first time (macOS shows its own prompt).

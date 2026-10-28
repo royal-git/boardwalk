@@ -122,6 +122,8 @@ enum WindowScan {
         /// Apps with a window, open or kept, on some desktop. Minimized windows aren't
         /// on one, so an app with only those counts as windowless and shows everywhere.
         var anywhere: Set<pid_t> = []
+        /// The app owning each window, by window id.
+        var owners: [Int: pid_t] = [:]
     }
 
     /// Asks macOS which desktop each window is on, rather than going by what's on
@@ -131,6 +133,7 @@ enum WindowScan {
         var result = Result()
         let all = appWindows(CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID))
         for (windowID, pid) in all {
+            result.owners[windowID] = pid
             let open = desktops.isOrderedIn(window: windowID)
             for desktop in desktops.desktops(ofWindow: windowID) {
                 if open {

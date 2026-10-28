@@ -13,6 +13,31 @@ struct DockTile: Identifiable {
     /// Whether the app has a window on this tile's desktop; running apps without
     /// one get a hollow dot.
     var hasWindowHere = false
+    /// In Paneru's strip, a tile stands for one window rather than the whole app.
+    var windowID: Int?
+}
+
+/// A column of Paneru's strip in the dock: one window's tile, or a stack's.
+struct TileColumn: Identifiable {
+    var tiles: [DockTile]
+    /// At least half of it is on screen.
+    var isInView: Bool
+
+    var id: String { tiles.first?.id ?? "" }
+    var windowID: Int? { tiles.first?.windowID }
+}
+
+/// A desktop's dock contents, in the order they're shown.
+struct DesktopTiles {
+    /// Pinned apps, then other open apps. While Paneru arranges the desktop, apps
+    /// with a window in its strip show there instead.
+    var apps: [DockTile] = []
+    /// Paneru's strip, left to right: a tile for each window.
+    var strip: [TileColumn] = []
+    /// Folders, files and links.
+    var others: [DockTile] = []
+
+    var isEmpty: Bool { apps.isEmpty && strip.isEmpty && others.isEmpty }
 }
 
 /// Owns the library of per-desktop docks, follows macOS desktop switches, and
@@ -26,6 +51,11 @@ final class AppModel: ObservableObject {
     @Published private(set) var windows = WindowScan.Result()
     /// The main display's desktops, in order.
     @Published private(set) var desktopIDs: [Int] = []
+    /// Each desktop's strip of windows while Paneru arranges them, by desktop id.
+    @Published private(set) var strips: [Int: Strip] = [:]
+    /// A window's column being moved in Paneru's strip: the dock shows it in its
+    /// new place while Paneru catches up, and back where it was if that fails.
+    @Published private var pendingMove: (desktop: Int, window: Int, column: Int)?
     @Published var lastError: String?
 
     private let storage = LibraryStorage()
@@ -43,6 +73,13 @@ final class AppModel: ObservableObject {
         return panel?.barFrame
     }
     private var shortcuts: ArrangeShortcuts?
+    private lazy var paneru = Paneru { [weak self] strips in
+        guard let self else { return }
+        self.strips = strips
+        // A window Paneru reports may be newer than the last window scan.
+        let ids = strips.values.flatMap { $0.columns.flatMap(\.windows) }.map(\.id)
+        if ids.contains(where: { self.windows.owners[$0] == nil }) { refreshWindows(notify: false) }
+    }
 
     init() {
         do {
@@ -85,10 +122,12 @@ final class AppModel: ObservableObject {
             center: { [weak self] in self?.centerWindow() },
             tileAll: { [weak self] in self?.tileAll() }
         )
+        paneru.start()
     }
 
     /// Called on quit: give the user their own Dock back.
     func stop() {
+        paneru.stop()
         systemDock.restore()
     }
 
@@ -140,20 +179,45 @@ final class AppModel: ObservableObject {
     // MARK: Dock contents
 
     /// The tiles for a desktop's dock: pinned apps, then open apps with windows
-    /// there, then folders, files and links.
-    func tiles(onDesktop desktopID: Int) -> (apps: [DockTile], others: [DockTile]) {
-        guard let space = space(onDesktop: desktopID) else { return ([], []) }
+    /// there; while Paneru arranges the desktop, a tile for each window in its
+    /// strip, in the same order; then folders, files and links.
+    func tiles(onDesktop desktopID: Int) -> DesktopTiles {
+        guard let space = space(onDesktop: desktopID) else { return DesktopTiles() }
         let here = windows.byDesktop[desktopID] ?? []
         let closedHere = windows.closedByDesktop[desktopID] ?? []
         let resolved = library.resolvedItems(for: space)
+        let pinnedApps = resolved.filter(\.isApp)
+        var result = DesktopTiles()
 
-        var apps = resolved.filter(\.isApp).map { item in
+        var strip = strips[desktopID]
+        if let move = pendingMove, move.desktop == desktopID {
+            strip = strip?.moving(columnOf: move.window, to: move.column)
+        }
+        var inStrip = Set<pid_t>()
+        var badged = Set<String>()
+        for column in strip?.columns ?? [] {
+            let tiles = column.windows.compactMap { window -> DockTile? in
+                guard let app = owner(of: window), let path = app.bundleURL?.path else { return nil }
+                inStrip.insert(app.processIdentifier)
+                let key = DockItem.app(path).identityKey
+                let pinnedItem = pinnedApps.first { $0.identityKey == key }
+                let item = pinnedItem ?? .app(path, label: app.localizedName)
+                // One pin badge per app, however many windows it has.
+                let showsPin = pinnedItem != nil && badged.insert(key).inserted
+                return DockTile(id: "window:\(window.id)", item: item, app: app, pinned: showsPin,
+                                hasWindowHere: true, windowID: window.id)
+            }
+            if !tiles.isEmpty { result.strip.append(TileColumn(tiles: tiles, isInView: column.isInView)) }
+        }
+
+        result.apps = pinnedApps.compactMap { item in
             let app = runningApp(at: item.location)
+            if let app, inStrip.contains(app.processIdentifier) { return nil }
             return DockTile(id: item.identityKey, item: item, app: app, pinned: true,
                             hasWindowHere: app.map { here.contains($0.processIdentifier) } ?? false)
         }
-        var seen = Set(apps.map(\.id))
-        for app in running {
+        var seen = Set(pinnedApps.map(\.identityKey))
+        for app in running where !inStrip.contains(app.processIdentifier) {
             guard let path = app.bundleURL?.path, !library.pins(appPath: path, in: space) else { continue }
             let pid = app.processIdentifier
             let state = DesktopApps.WindowState(
@@ -165,20 +229,34 @@ final class AppModel: ObservableObject {
             guard DesktopApps.showsHere(state) else { continue }
             let item = DockItem.app(path, label: app.localizedName)
             guard seen.insert(item.identityKey).inserted else { continue }
-            apps.append(DockTile(id: item.identityKey, item: item, app: app, pinned: false,
-                                 hasWindowHere: state.hasWindowHere))
+            result.apps.append(DockTile(id: item.identityKey, item: item, app: app, pinned: false,
+                                        hasWindowHere: state.hasWindowHere))
         }
 
-        let others = resolved.filter { !$0.isApp }.map {
+        result.others = resolved.filter { !$0.isApp }.map {
             DockTile(id: $0.identityKey, item: $0, app: nil, pinned: true)
         }
-        return (apps, others)
+        return result
+    }
+
+    /// The running app a strip window belongs to: from the window list, or by
+    /// bundle id for a window newer than the last look at it.
+    private func owner(of window: Strip.Window) -> NSRunningApplication? {
+        if let pid = windows.owners[window.id] {
+            return running.first { $0.processIdentifier == pid }
+        }
+        return running.first { $0.bundleIdentifier == window.bundleID }
     }
 
     func open(_ tile: DockTile) {
         let item = tile.item
         switch item.kind {
         case .app:
+            // A window's tile puts that window in front of its app's others, so it's
+            // the one activating the app focuses; Paneru then slides it into view.
+            if let windowID = tile.windowID, let app = tile.app {
+                windowManager.raise(window: windowID, of: app)
+            }
             // openApplication also activates a running app and asks it to reopen a window.
             NSWorkspace.shared.openApplication(
                 at: URL(fileURLWithPath: item.location), configuration: NSWorkspace.OpenConfiguration()
@@ -187,6 +265,16 @@ final class AppModel: ObservableObject {
             NSWorkspace.shared.open(URL(fileURLWithPath: (item.location as NSString).expandingTildeInPath))
         case .url:
             if let url = URL(string: item.location) { NSWorkspace.shared.open(url) }
+        }
+    }
+
+    /// Moves a window's column in Paneru's strip to where another window's column
+    /// is, as when dragging one onto the other in the dock. One move at a time.
+    func moveColumn(holding windowID: Int, toColumnOf target: Int, onDesktop desktopID: Int) {
+        guard pendingMove == nil, let index = strips[desktopID]?.column(of: target) else { return }
+        pendingMove = (desktopID, windowID, index)
+        paneru.move(window: windowID, toColumn: index, onDesktop: desktopID) { [weak self] _ in
+            self?.pendingMove = nil
         }
     }
 
