@@ -184,7 +184,7 @@ pub(crate) struct RestoreFocusMarker {
 /// normal expose-reshuffle back.
 const RESTORE_FOCUS_GUARD_TIMEOUT: Duration = Duration::from_secs(2);
 
-fn spawn_restore_focus_guard(entity: Entity, commands: &mut Commands) {
+pub(crate) fn spawn_restore_focus_guard(entity: Entity, commands: &mut Commands) {
     let timeout = Timeout::new(RESTORE_FOCUS_GUARD_TIMEOUT, None, commands);
     commands.spawn((timeout, RestoreFocusMarker { entity }));
 }
@@ -260,6 +260,7 @@ fn workspace_change_handler(
     )>,
     active_display: Single<(&Display, Entity), With<ActiveDisplayMarker>>,
     window_manager: Res<WindowManager>,
+    focus_history: Res<FocusHistory>,
     mut commands: Commands,
 ) {
     if !messages
@@ -334,6 +335,14 @@ fn workspace_change_handler(
         && let Ok(mut entity_commands) = commands.get_entity(into)
     {
         entity_commands.try_insert(ActiveWorkspaceMarker);
+        // Coming back to a space, macOS re-focuses the window last used there.
+        // That isn't a new choice of window, so it mustn't slide the strip
+        // away from where it was left, scrolled however far. Focusing some
+        // other window on the way in (Cmd-Tab to it, say) still brings that
+        // one into view.
+        if let Some(entity) = focus_history.last_managed(workspace_id) {
+            spawn_restore_focus_guard(entity, &mut commands);
+        }
     }
 }
 

@@ -23,7 +23,7 @@ use crate::ecs::focus::FocusHistory;
 use crate::ecs::layout::LayoutStrip;
 use crate::ecs::params::{ActiveDisplay, GlobalState, WindowCtx, Windows};
 use crate::ecs::state::PaneruState;
-use crate::ecs::workspace::RestoreFocusMarker;
+use crate::ecs::workspace::{PreviousStripPosition, RestoreFocusMarker, spawn_restore_focus_guard};
 use crate::ecs::{
     ActiveWorkspaceMarker, Bounds, DockPosition, Initializing, LayoutPosition, Position,
     ResizeMarker, RestoreWindowState, Scrolling, SendMessageTrigger, SpawnCommandsExt,
@@ -231,7 +231,12 @@ pub(super) fn theme_change_trigger(
 pub(super) fn window_focused_trigger(
     mut messages: MessageReader<Event>,
     applications: Query<&Application>,
-    mut workspaces: Query<(Entity, &mut LayoutStrip, Has<ActiveWorkspaceMarker>)>,
+    mut workspaces: Query<(
+        Entity,
+        &mut LayoutStrip,
+        Has<ActiveWorkspaceMarker>,
+        Has<PreviousStripPosition>,
+    )>,
     restore_guards: Query<(Entity, &RestoreFocusMarker)>,
     mut focus_history: ResMut<FocusHistory>,
     global_state: GlobalState,
@@ -326,7 +331,7 @@ pub(super) fn window_focused_trigger(
         let mut owner = None;
         let mut owning_workspace_id = None;
         let mut active_workspace_id = None;
-        for (strip_entity, mut strip, active) in &mut workspaces {
+        for (strip_entity, mut strip, active, parked) in &mut workspaces {
             if active {
                 active_workspace_id = Some(strip.id());
             }
@@ -338,7 +343,7 @@ pub(super) fn window_focused_trigger(
                     column.move_to_front(entity);
                 }
                 owning_workspace_id = Some(strip.id());
-                owner = Some((strip_entity, active));
+                owner = Some((strip_entity, active, parked));
             }
         }
 
@@ -347,11 +352,29 @@ pub(super) fn window_focused_trigger(
             continue;
         }
 
-        if let Some((strip_entity, active)) = owner
+        if let Some((strip_entity, active, _)) = owner
             && !active
             && let Ok(mut entity_commands) = ctx.commands.get_entity(strip_entity)
         {
             entity_commands.try_insert(ActiveWorkspaceMarker);
+        }
+
+        // This focus brings back another space's strip (not a parked virtual
+        // one, which restores its own offset): macOS re-focusing the window
+        // last used there, which mustn't slide the strip away from where it
+        // was left. `workspace_change_handler` guards the same when the space
+        // change is seen first.
+        let mut restored_focus = false;
+        if let Some((_, false, false)) = owner
+            && owning_workspace_id.and_then(|id| focus_history.last_managed(id)) == Some(entity)
+        {
+            if !restore_guards
+                .iter()
+                .any(|(_, guard)| guard.entity == entity)
+            {
+                spawn_restore_focus_guard(entity, &mut ctx.commands);
+            }
+            restored_focus = true;
         }
 
         // Record before the already-focused short-circuit below: focus_entity
@@ -366,7 +389,6 @@ pub(super) fn window_focused_trigger(
         // reshuffling on it would slide the strip away from where the restore
         // placed it. It may fire twice (front_switched_trigger synthesizes a
         // duplicate), so a match keeps the guard; focus moving elsewhere despawns it.
-        let mut restored_focus = false;
         for (guard_entity, guard) in &restore_guards {
             if guard.entity == entity {
                 restored_focus = true;
