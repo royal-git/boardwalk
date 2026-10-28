@@ -84,7 +84,9 @@ type ResizableWindows<'w, 's> = Query<
 >;
 
 const ANIAMTE_SNAP_THRESHOLD: f32 = 5.0;
-const LOOP_MAX_TIMEOUT_FRAME_ACTIVE_MS: u32 = 16;
+// One frame of a 120 Hz display: while windows animate, nothing else may wake
+// the loop (apps reporting the moves don't), so this paces the animation.
+const LOOP_MAX_TIMEOUT_FRAME_ACTIVE_MS: u32 = 8;
 const LOOP_MAX_TIMEOUT_LOWPOWER_MS: u32 = 2000;
 // Real events (input, IPC, workspace changes, ...) wake the pump immediately
 // via `EventLoopWaker`, so this only bounds how late the free-running 1s
@@ -768,13 +770,17 @@ pub(crate) fn pump_events(
             }
             Ok(event) => {
                 woke |= matches!(event, Event::SystemWoke { .. });
+                // Moves and resizes reported back don't count as activity:
+                // they mustn't shorten the next wait (see `can_wait_for_frame`).
+                if !event.can_wait_for_frame() {
+                    *timeout = LOOP_TIMEOUT_STEP;
+                }
                 if matches!(event, Event::MouseMoved { .. }) {
                     pending_mouse = Some(event);
                 } else {
                     received_events.extend(pending_mouse.take());
                     received_events.push(event);
                 }
-                *timeout = LOOP_TIMEOUT_STEP;
             }
             Err(TryRecvError::Empty) => break true,
         }

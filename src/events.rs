@@ -245,6 +245,19 @@ pub struct EventSender {
 }
 
 impl Event {
+    /// Whether this can wait for the next frame instead of waking the loop for
+    /// one of its own. Apps report every move and resize, including each step
+    /// of the ones Paneru animates, and an app that answers quickly (a native
+    /// Mac app, say) would otherwise wake the loop again within a millisecond
+    /// of each frame: it ran over a thousand frames a second during
+    /// a swipe, each moving the windows a pixel, and reporting it back again.
+    pub fn can_wait_for_frame(&self) -> bool {
+        matches!(
+            self,
+            Event::WindowMoved { .. } | Event::WindowResized { .. }
+        )
+    }
+
     /// Whether this is one of the pointer or gesture events republished on
     /// [`InputEvent`].
     pub fn is_input(&self) -> bool {
@@ -297,10 +310,13 @@ impl EventSender {
     ///
     /// `Ok(())` if the event is sent successfully, otherwise `Err(Error)` if the receiver has disconnected.
     pub fn send(&self, event: Event) -> Result<()> {
+        let wake = !event.can_wait_for_frame();
         self.tx.send(event)?;
         // After the queue push, so the pump cannot wake to an empty channel and
         // go back to sleep past the event that woke it.
-        self.waker.wake();
+        if wake {
+            self.waker.wake();
+        }
         Ok(())
     }
 }
