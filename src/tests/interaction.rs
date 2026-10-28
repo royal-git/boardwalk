@@ -336,15 +336,11 @@ fn test_scrolling() {
         Event::Command {
             command: Command::PrintState,
         },
-        // A single event's delta is a fraction of the viewport travelled in
-        // one frame, and the gesture velocity it produces is `delta / dt`.
-        // 0.04 over a 20ms frame is two viewport widths per second — a brisk
-        // but ordinary swipe, which is the regime this test is about. An order
-        // of magnitude more and the strip simply flies into its clamp bound
-        // and every window parks off-screen at the sliver, which asserts
-        // nothing about scrolling.
+        // While the fingers are down the strip follows them exactly: half the
+        // trackpad's width at the default sensitivity of 0.35 moves it
+        // 0.5 * 1024 * 0.35 = 179px. No release, so nothing to coast on.
         Event::Swipe {
-            delta: 0.04,
+            delta: 0.5,
             fingers: 3,
             distance_cm: 0.0,
         },
@@ -373,9 +369,9 @@ fn test_scrolling() {
         // The strip has come to rest mid-scroll: still one contiguous run of
         // 400px columns, none of them parked at an edge sliver.
         .on_iteration(5, move |world, _state| {
-            assert_window_at!(world, 0, -186, TEST_MENUBAR_HEIGHT);
-            assert_window_at!(world, 1, 214, TEST_MENUBAR_HEIGHT);
-            assert_window_at!(world, 2, 614, TEST_MENUBAR_HEIGHT);
+            assert_window_at!(world, 0, -179, TEST_MENUBAR_HEIGHT);
+            assert_window_at!(world, 1, 221, TEST_MENUBAR_HEIGHT);
+            assert_window_at!(world, 2, 621, TEST_MENUBAR_HEIGHT);
         })
         .run(commands);
 }
@@ -713,13 +709,20 @@ fn test_scrolling_stop() {
 
 #[test]
 fn test_window_hidden_ratio() {
+    // Window 0 ends up a quarter hidden (0.3 of the trackpad moves the strip
+    // 0.3 * 1024 * 0.35 = 108px), under the ratio, so focusing it from window 1
+    // leaves the strip where the swipe put it.
     let commands = vec![
         Event::MenuOpened { window_id: 0 },
+        Event::Command {
+            command: Command::Window(Operation::Focus(Direction::Last)),
+        },
         Event::Swipe {
             delta: 0.3,
             fingers: 3,
             distance_cm: 0.0,
         },
+        Event::TouchpadUp,
         Event::Command {
             command: Command::Window(Operation::Focus(Direction::First)),
         },
@@ -739,7 +742,8 @@ fn test_window_hidden_ratio() {
     TestHarness::new()
         .with_config(config)
         .with_windows(2)
-        .on_iteration(2, |world, _state| {
+        .on_iteration(4, |world, _state| {
+            assert_focused!(world, 0);
             let entity = find_window_entity(0, world);
             let window = world.get::<Window>(entity).expect("finding window");
             assert!(window.frame().min.x < 0);
@@ -1759,16 +1763,16 @@ fn test_mid_strip_insertion_preserves_window_x() {
             command: Command::Window(Operation::VirtualMoveNumber(1, MoveFocus::Stay)),
         },
         // Scroll VW0 slightly to randomize the positions. "Slightly" is the
-        // point: a single event's delta is viewport-fractions travelled in one
-        // frame, so the velocity it yields is `delta / dt`. Anything much
-        // larger throws the strip into its clamp bound, which parks the
+        // point: the strip follows the fingers (here 0.5 * 1024 * 0.35 = 179px),
+        // and much further throws it into its clamp bound, which parks the
         // focused window at an edge sliver and makes the offset compared below
         // that fixed sliver rather than a real layout position.
         Event::Swipe {
-            delta: 0.06,
+            delta: 0.5,
             fingers: 3,
             distance_cm: 0.0,
         },
+        Event::TouchpadUp,
         // Used as a noop to let the scroll settle.
         Event::MenuOpened { window_id: 0 },
         // Change to VW1 and scroll it slightly as well.
@@ -1776,10 +1780,11 @@ fn test_mid_strip_insertion_preserves_window_x() {
             command: Command::Window(Operation::VirtualNumber(1)),
         },
         Event::Swipe {
-            delta: 0.04,
+            delta: 0.35,
             fingers: 3,
             distance_cm: 0.0,
         },
+        Event::TouchpadUp,
         Event::MenuOpened { window_id: 0 },
         // Change back to VW0 and send one window over to VW1.
         Event::Command {
@@ -1796,7 +1801,7 @@ fn test_mid_strip_insertion_preserves_window_x() {
     let previous_offset = std::rc::Rc::new(std::cell::RefCell::new(0));
     let previous_offset2 = previous_offset.clone();
     harness
-        .on_iteration(10, move |world, _state| {
+        .on_iteration(12, move |world, _state| {
             let mut q =
                 world.query_filtered::<(&Window, &Position), With<crate::ecs::FocusedMarker>>();
             let (_, position) = q.single(world).expect("a focused window");
@@ -1804,7 +1809,7 @@ fn test_mid_strip_insertion_preserves_window_x() {
             previous_offset.replace(position.x);
             assert_ne!(position.x, 0);
         })
-        .on_iteration(11, move |world, _state| {
+        .on_iteration(13, move |world, _state| {
             let mut q =
                 world.query_filtered::<(&Window, &Position), With<crate::ecs::FocusedMarker>>();
             let (_, position) = q.single(world).expect("a focused window");
@@ -3029,23 +3034,26 @@ fn test_stack_unstack_brings_focused_window_into_view() {
         Event::Command {
             command: Command::Window(Operation::Focus(Direction::East)),
         },
-        // Swipe windows 0 and 1 off screen.
+        // Swipe windows 0 and 1 off screen: the strip follows the fingers, so
+        // two trackpad widths at sensitivity 0.35 move it 2 * 1024 * 0.35 = 717px.
         Event::Swipe {
-            delta: 0.3,
+            delta: 2.0,
             fingers: 3,
             distance_cm: 0.0,
         },
+        Event::TouchpadUp,
         // Noop to let the scroll settle.
         Event::MenuOpened { window_id: 0 },
         Event::Command {
             command: Command::Window(Operation::Stack(true)),
         },
-        // Now swipe the stacked windows off screen again.
+        // Now swipe the stacked windows off screen again (215px).
         Event::Swipe {
-            delta: 0.1,
+            delta: 0.6,
             fingers: 3,
             distance_cm: 0.0,
         },
+        Event::TouchpadUp,
         // Noop to let the scroll settle.
         Event::MenuOpened { window_id: 0 },
         Event::Command {
@@ -3054,14 +3062,14 @@ fn test_stack_unstack_brings_focused_window_into_view() {
     ];
 
     harness
-        .on_iteration(3, check_if_offscreen)
-        .on_iteration(4, |world, _state| {
+        .on_iteration(4, check_if_offscreen)
+        .on_iteration(5, |world, _state| {
             // Check that both window are stacked and moved into view.
             assert_window_at!(world, 0, 0, 20);
             assert_window_at!(world, 1, 0, 394);
         })
-        .on_iteration(5, check_if_offscreen)
-        .on_iteration(7, |world, _state| {
+        .on_iteration(7, check_if_offscreen)
+        .on_iteration(9, |world, _state| {
             // Check that both window are stacked and moved into view.
             assert_window_at!(world, 1, 0, 20);
         })

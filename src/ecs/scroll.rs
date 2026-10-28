@@ -124,6 +124,50 @@ fn paging_active(config: Res<Config>, state: Res<PageGestureState>) -> bool {
 }
 
 #[cfg(test)]
+mod release_velocity_tests {
+    use super::*;
+
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
+    #[test]
+    fn measures_finger_speed_whatever_the_frame_timing() {
+        // 0.01 of the viewport every 8 ms is 1.25 viewports a second, whether
+        // the frames that carry the samples are 8 ms apart or the samples land
+        // a fraction of a millisecond after a burst of empty frames.
+        let mut samples = SwipeSamples::default();
+        for i in 0..10 {
+            samples.push(MS(8 * i), 0.01);
+        }
+        assert!((samples.velocity(MS(72)) - 1.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn pausing_before_lifting_leaves_nothing_to_coast_on() {
+        let mut samples = SwipeSamples::default();
+        for i in 0..10 {
+            samples.push(MS(8 * i), 0.01);
+        }
+        assert_eq!(
+            samples.velocity(MS(72) + RELEASE_VELOCITY_WINDOW + MS(1)),
+            0.0
+        );
+    }
+
+    #[test]
+    fn only_the_last_stretch_counts() {
+        // Fast, then slow for the whole window before release.
+        let mut samples = SwipeSamples::default();
+        for i in 0..10 {
+            samples.push(MS(8 * i), 0.05);
+        }
+        for i in 10..30 {
+            samples.push(MS(8 * i), 0.005);
+        }
+        assert!((samples.velocity(MS(8 * 29)) - 0.625).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
 mod paging_tests {
     use super::*;
 
@@ -165,13 +209,56 @@ mod paging_tests {
 /// however long the frame actually took.
 const MAX_STEP_SECS: f64 = 1.0 / 30.0;
 
-/// Lower bound on the timestep used to *derive* a velocity from a gesture delta.
+/// How far back a release looks to measure how fast the fingers were moving.
 ///
-/// Here the true delta is what we want — a backlog drained after a stall really
-/// does represent that much finger travel over that much time. The hazard is
-/// the opposite one: on a catch-up frame `dt` approaches zero, and
-/// `gesture_delta / dt` diverges.
-const MIN_STEP_SECS: f64 = 1.0 / 1000.0;
+/// Measured over a window rather than per frame, because frame timing says
+/// nothing about finger speed: frames come as fast as events wake the loop,
+/// sometimes well under a millisecond apart, and one trackpad sample divided
+/// by such a frame reads as a burst of speed. The window spans several samples
+/// whatever the frame rate, and is short enough that pausing before lifting
+/// leaves nothing to coast on.
+const RELEASE_VELOCITY_WINDOW: Duration = Duration::from_millis(80);
+
+/// Finger travel per frame over the last [`RELEASE_VELOCITY_WINDOW`], for the
+/// speed a swipe is released at.
+#[derive(Default)]
+pub(super) struct SwipeSamples(VecDeque<(Duration, f64)>);
+
+impl SwipeSamples {
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn push(&mut self, at: Duration, delta: f64) {
+        self.0.push_back((at, delta));
+        self.trim(at);
+    }
+
+    fn trim(&mut self, now: Duration) {
+        while self
+            .0
+            .front()
+            .is_some_and(|(at, _)| now.saturating_sub(*at) > RELEASE_VELOCITY_WINDOW)
+        {
+            self.0.pop_front();
+        }
+    }
+
+    /// Viewport fractions per second over the window ending at `now`. The
+    /// first sample only marks where the window starts: its travel happened
+    /// before it.
+    fn velocity(&mut self, now: Duration) -> f64 {
+        self.trim(now);
+        let (Some((first, _)), Some((last, _))) = (self.0.front(), self.0.back()) else {
+            return 0.0;
+        };
+        let span = last.saturating_sub(*first).as_secs_f64();
+        if span <= 0.0 {
+            return 0.0;
+        }
+        self.0.iter().skip(1).map(|(_, delta)| delta).sum::<f64>() / span
+    }
+}
 
 /// The on-screen strip, its origin, and the scroll state being applied to it.
 type ScrollingStrip<'w, 's> = Single<
@@ -311,12 +398,14 @@ fn swipe_gesture(
     >,
     time: Res<Time>,
     config: Res<Config>,
+    mut samples: Local<SwipeSamples>,
     mut commands: Commands,
 ) {
     let swipe_sensitivity = config.swipe_sensitivity();
     let mut total_delta = 0.0;
     let mut gesture_delta = 0.0;
     let mut touchpad_down = false;
+    let mut touchpad_up = false;
     let mut has_scroll_event = false;
     let mut has_gesture_event = false;
 
@@ -335,6 +424,7 @@ fn swipe_gesture(
                 touchpad_down = true;
                 total_delta = 0.0;
             }
+            Event::TouchpadUp => touchpad_up = true,
             Event::Scroll { delta } => {
                 total_delta += *delta * scroll_scale;
                 has_scroll_event = true;
@@ -354,8 +444,16 @@ fn swipe_gesture(
         }
     }
 
-    if !touchpad_down && !has_scroll_event {
+    if !touchpad_down && !touchpad_up && !has_scroll_event {
         return;
+    }
+
+    let now = time.elapsed();
+    if touchpad_down {
+        samples.clear();
+    }
+    if has_gesture_event {
+        samples.push(now, gesture_delta);
     }
 
     let (entity, position, scrolling) = &mut *active_workspace;
@@ -369,9 +467,11 @@ fn swipe_gesture(
     if touchpad_down && let Some(scrolling) = scrolling.as_mut() {
         scrolling.velocity = 0.0;
         scrolling.is_user_swiping = true;
-        scrolling.last_event = time.elapsed();
+        scrolling.last_event = now;
     }
 
+    // While the fingers are down the strip follows them exactly, and nothing
+    // else moves it: `scrolling_integrator` leaves it alone until release.
     if has_scroll_event {
         let viewport_width = f64::from(active_display.bounds().width());
         let direction_modifier = match config.swipe_gesture_direction() {
@@ -379,37 +479,39 @@ fn swipe_gesture(
             SwipeGestureDirection::Reversed => 1.0,
         };
 
-        // Floored, not capped: dividing by the real elapsed time is correct
-        // here, but a catch-up frame can drive `dt` arbitrarily close to zero.
-        let dt = time.delta_secs_f64().max(MIN_STEP_SECS);
-        let new_velocity = if has_gesture_event {
-            gesture_delta * swipe_sensitivity / dt
-        } else {
-            0.0
-        };
-
         if let Some(scrolling) = scrolling.as_mut() {
-            // Native modifier-scroll events already include macOS momentum.
-            // Add synthetic inertia only for raw multi-finger gestures.
-            scrolling.velocity = if has_gesture_event {
-                // Smoothen gesture velocity changes using EMA.
-                0.3 * new_velocity + 0.7 * scrolling.velocity
-            } else {
-                0.0
-            };
+            scrolling.velocity = 0.0;
             scrolling.is_user_swiping = true;
-            scrolling.last_event = time.elapsed();
+            scrolling.last_event = now;
             scrolling.position +=
                 total_delta * viewport_width * direction_modifier * swipe_sensitivity;
         } else if let Ok(mut entity_commands) = commands.get_entity(*entity) {
             entity_commands.try_insert(Scrolling {
-                velocity: new_velocity,
+                velocity: 0.0,
                 position: f64::from(position.0.x)
                     + total_delta * viewport_width * direction_modifier * swipe_sensitivity,
                 is_user_swiping: true,
-                last_event: time.elapsed(),
+                last_event: now,
             });
         }
+    }
+
+    // Lifting the fingers lets the strip coast at the speed they were moving.
+    // Native modifier-scroll events bring their own macOS momentum, so only a
+    // multi-finger swipe leaves samples to coast on.
+    if touchpad_up {
+        if let Some(scrolling) = scrolling.as_mut() {
+            scrolling.velocity = samples.velocity(now) * swipe_sensitivity;
+            scrolling.is_user_swiping = false;
+            // Lifted without moving: the strip is free straight away, rather
+            // than held where the fingers left it until `swiping_timeout`.
+            if scrolling.velocity.abs() < f64::EPSILON
+                && let Ok(mut entity_commands) = commands.get_entity(*entity)
+            {
+                entity_commands.try_remove::<Scrolling>();
+            }
+        }
+        samples.clear();
     }
 }
 
@@ -430,7 +532,13 @@ pub(super) fn swiping_timeout(
 
     for (entity, mut scroll) in strips {
         if time.elapsed().abs_diff(scroll.last_event) > FINGER_LIFT_THRESHOLD {
-            scroll.is_user_swiping = false;
+            // Resting fingers, a finished modifier-scroll, or a release that
+            // never arrived: nothing to coast on. A real release has already
+            // cleared `is_user_swiping` and set the speed to coast at.
+            if scroll.is_user_swiping {
+                scroll.is_user_swiping = false;
+                scroll.velocity = 0.0;
+            }
 
             if scroll.velocity.abs() * dt * viewport_width < MIN_VELOCITY_PX
                 && let Ok(mut entity_commands) = commands.get_entity(entity)
@@ -541,7 +649,7 @@ fn scrolling_integrator(
     };
 
     let scroll = &mut *strip;
-    if scroll.velocity.abs() > 0.0001 {
+    if !scroll.is_user_swiping && scroll.velocity.abs() > 0.0001 {
         scroll.position += scroll.velocity * dt * viewport_width * direction_modifier;
     }
 }
