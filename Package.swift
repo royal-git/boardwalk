@@ -8,9 +8,9 @@ let package = Package(
         .executable(name: "BetterDock", targets: ["BetterDock"]),
     ],
     targets: [
-        // No UI: the per-desktop dock model, storage, reading Apple's Dock.
+        // No UI: the per-desktop dock model, storage, reading Apple's Dock, window layouts.
         .target(name: "BetterDockCore"),
-        // The menu bar app: the docks, following desktops, hiding Apple's Dock.
+        // The menu bar app: the docks, following desktops, arranging windows, hiding Apple's Dock.
         .executableTarget(name: "BetterDock", dependencies: ["BetterDockCore"]),
         .testTarget(name: "BetterDockCoreTests", dependencies: ["BetterDockCore"]),
     ]

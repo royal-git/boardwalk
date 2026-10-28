@@ -9,7 +9,7 @@ struct DockView: View {
 
     private static let tileSize: CGFloat = 48
     /// Empty room around the bar: above for the hover magnification, below for a
-    /// gap from the screen edge.
+    /// gap from the screen edge. Arranged windows stop at the bar, not the margin.
     static let margins = EdgeInsets(top: 14, leading: 8, bottom: 6, trailing: 8)
 
     var body: some View {

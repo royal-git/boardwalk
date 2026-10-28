@@ -71,6 +71,18 @@ final class DockPanelController {
         panel.alphaValue = 1
     }
 
+    /// Where the visible bar is on screen: the panel minus the empty margins around
+    /// it, like the room above for the hover magnification.
+    var barFrame: CGRect {
+        let margins = DockView.margins
+        return NSRect(
+            x: panel.frame.minX + margins.leading,
+            y: panel.frame.minY + margins.bottom,
+            width: panel.frame.width - margins.leading - margins.trailing,
+            height: panel.frame.height - margins.top - margins.bottom
+        )
+    }
+
     func close() {
         cancellable = nil
         panel.orderOut(nil)

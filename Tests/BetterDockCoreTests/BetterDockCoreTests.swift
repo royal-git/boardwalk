@@ -153,3 +153,90 @@ final class DesktopAppsTests: XCTestCase {
         XCTAssertTrue(DesktopApps.showsHere(state()))
     }
 }
+
+final class WindowLayoutTests: XCTestCase {
+    // A 1512-wide screen below a 33pt menu bar, above the dock.
+    let area = CGRect(x: 0, y: 33, width: 1512, height: 857)
+
+    func testHalvesAndMaximize() {
+        XCTAssertEqual(WindowLayout.leftHalf.frame(in: area), CGRect(x: 0, y: 33, width: 756, height: 857))
+        XCTAssertEqual(WindowLayout.rightHalf.frame(in: area), CGRect(x: 756, y: 33, width: 756, height: 857))
+        XCTAssertEqual(WindowLayout.maximize.frame(in: area), area)
+    }
+
+    func testThirdsMeetWithoutGaps() {
+        let thirds = [WindowLayout.leftThird, .centerThird, .rightThird].map { $0.frame(in: area) }
+        XCTAssertEqual(thirds[0].maxX, thirds[1].minX)
+        XCTAssertEqual(thirds[1].maxX, thirds[2].minX)
+        XCTAssertEqual(thirds[2].maxX, area.maxX)
+        XCTAssertEqual(WindowLayout.leftTwoThirds.frame(in: area).maxX, thirds[1].maxX)
+    }
+
+    func testQuarters() {
+        XCTAssertEqual(WindowLayout.bottomRight.frame(in: area), CGRect(x: 756, y: 462, width: 756, height: 428))
+        XCTAssertEqual(WindowLayout.topLeft.frame(in: area).maxY, WindowLayout.bottomLeft.frame(in: area).minY)
+    }
+
+    func testCenterKeepsSizeButFits() {
+        XCTAssertEqual(WindowLayout.centered(CGSize(width: 800, height: 600), in: area),
+                       CGRect(x: 356, y: 162, width: 800, height: 600))
+        XCTAssertEqual(WindowLayout.centered(CGSize(width: 3000, height: 3000), in: area), area)
+    }
+
+    func testTileGivesTheFrontWindowTheMostRoom() {
+        XCTAssertEqual(WindowLayout.tile(1, in: area), [area])
+        let three = WindowLayout.tile(3, in: area)
+        XCTAssertEqual(three[0], WindowLayout.leftHalf.frame(in: area))
+        XCTAssertEqual(three[1], WindowLayout.topRight.frame(in: area))
+        XCTAssertEqual(three[2], WindowLayout.bottomRight.frame(in: area))
+        XCTAssertEqual(WindowLayout.tile(5, in: area).count, 5)
+        XCTAssertTrue(WindowLayout.tile(0, in: area).isEmpty)
+    }
+
+    func testTileCoversTheWholeArea() {
+        for count in 1...9 {
+            let frames = WindowLayout.tile(count, in: area)
+            let covered = frames.reduce(0) { $0 + $1.width * $1.height }
+            XCTAssertEqual(covered, area.width * area.height, "\(count) windows")
+            XCTAssertTrue(frames.allSatisfy { area.contains($0) })
+        }
+    }
+}
+
+final class ArrowComboTests: XCTestCase {
+    func presses(_ arrows: ArrowCombo.Arrow...) -> [WindowLayout] {
+        var combo = ArrowCombo()
+        return arrows.map { combo.press($0) }
+    }
+
+    func testEachPressRefinesTheLast() {
+        XCTAssertEqual(presses(.left, .left, .right), [.leftHalf, .leftThird, .leftTwoThirds])
+        XCTAssertEqual(presses(.right, .right, .left), [.rightHalf, .rightThird, .rightTwoThirds])
+    }
+
+    func testOppositeArrowsMeanTheCenterThird() {
+        XCTAssertEqual(presses(.left, .right).last, .centerThird)
+        XCTAssertEqual(presses(.right, .left).last, .centerThird)
+    }
+
+    func testUpAndDownPickHalvesOfTheColumnsInEitherOrder() {
+        XCTAssertEqual(presses(.left, .up).last, .topLeft)
+        XCTAssertEqual(presses(.up, .left).last, .topLeft)
+        XCTAssertEqual(presses(.right, .down).last, .bottomRight)
+        XCTAssertEqual(presses(.up), [.topHalf])
+        XCTAssertEqual(presses(.left, .right, .up).last, WindowLayout(columns: .middleThird, rows: .firstHalf))
+        XCTAssertEqual(presses(.up, .down).last, .bottomHalf)
+    }
+
+    func testMeaninglessSequencesStartOverFromTheLastArrow() {
+        XCTAssertEqual(presses(.left, .left, .right, .right).last, .rightHalf)
+        XCTAssertEqual(presses(.left, .right, .right).last, .rightHalf)
+    }
+
+    func testResetStartsFresh() {
+        var combo = ArrowCombo()
+        _ = combo.press(.left)
+        combo.reset()
+        XCTAssertEqual(combo.press(.right), .rightHalf)
+    }
+}

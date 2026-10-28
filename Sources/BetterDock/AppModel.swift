@@ -37,6 +37,12 @@ final class AppModel: ObservableObject {
     static let allDesktops = 0
     private var observers: [NSObjectProtocol] = []
     private var windowTimer: Timer?
+    private lazy var windowManager = WindowManager { [weak self] in
+        guard let self else { return nil }
+        let panel = desktops.current().flatMap { self.panels[$0.id] } ?? panels[Self.allDesktops]
+        return panel?.barFrame
+    }
+    private var shortcuts: ArrangeShortcuts?
 
     init() {
         do {
@@ -74,6 +80,11 @@ final class AppModel: ObservableObject {
         windowTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.syncDesktop()
         }
+        shortcuts = ArrangeShortcuts(
+            arrange: { [weak self] in self?.arrange($0) },
+            center: { [weak self] in self?.centerWindow() },
+            tileAll: { [weak self] in self?.tileAll() }
+        )
     }
 
     /// Called on quit: give the user their own Dock back.
@@ -177,6 +188,21 @@ final class AppModel: ObservableObject {
         case .url:
             if let url = URL(string: item.location) { NSWorkspace.shared.open(url) }
         }
+    }
+
+    /// Puts the front window in `layout`, above the dock.
+    func arrange(_ layout: WindowLayout) {
+        windowManager.arrange(layout)
+    }
+
+    /// Moves the front window to the middle, keeping its size.
+    func centerWindow() {
+        windowManager.center()
+    }
+
+    /// Fills the screen above the dock with this desktop's windows.
+    func tileAll() {
+        windowManager.tileAll()
     }
 
     func showInFinder(_ item: DockItem) {
