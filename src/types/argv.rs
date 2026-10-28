@@ -74,6 +74,16 @@ fn parse_operation(argv: &[&str]) -> Result<Operation> {
         },
         "togglefloatlayer" => Operation::ToggleFloatingLayer,
         "swap" => Operation::Swap(Direction::parse(argument()?)?),
+        // `place <window id> <position>`, the position 1-based like `focus`'s.
+        "place" => {
+            let window = argument()?.parse().map_err(|_| err())?;
+            let position = argv
+                .get(2)
+                .and_then(|arg| arg.parse::<usize>().ok())
+                .filter(|&position| position > 0)
+                .ok_or_else(err)?;
+            Operation::Place(window, position - 1)
+        }
         "center" => Operation::Center,
         "resize" => Operation::Resize(
             argv.get(1)
@@ -186,6 +196,13 @@ impl Operation {
         match self {
             Operation::Focus(direction) => vec!["focus".to_string(), direction.token()],
             Operation::Swap(direction) => vec!["swap".to_string(), direction.token()],
+            Operation::Place(window, index) => {
+                vec![
+                    "place".to_string(),
+                    window.to_string(),
+                    (index + 1).to_string(),
+                ]
+            }
             Operation::Center => owned(&["center"]),
             Operation::Resize(direction) => owned(&["resize", direction.token()]),
             Operation::ResizeVertical(direction) => {
@@ -248,6 +265,7 @@ mod tests {
             Operation::Focus(Direction::East),
             Operation::Focus(Direction::Nth(2)),
             Operation::Swap(Direction::West),
+            Operation::Place(42, 2),
             Operation::Center,
             Operation::Resize(ResizeDirection::Shrink),
             Operation::ResizeVertical(ResizeDirection::Grow),

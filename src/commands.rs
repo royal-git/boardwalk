@@ -136,7 +136,11 @@ pub fn register_commands(app: &mut bevy::app::App) {
     app.init_resource::<SnippetDialect>();
     app.add_systems(
         PreUpdate,
-        (copy_window_rule, toggle_tabbed_display_handler)
+        (
+            copy_window_rule,
+            toggle_tabbed_display_handler,
+            command_place_window,
+        )
             .in_set(crate::ecs::PreUpdateSet::Dispatch),
     );
 }
@@ -771,6 +775,39 @@ fn command_swap_focus(
             commands.trigger(SendMessageTrigger(Event::Command {
                 command: Command::Window(Operation::ToNextDisplay(MoveFocus::Follow)),
             }));
+        }
+    }
+}
+
+/// Moves a window's column to a position in its strip, the others keeping
+/// their order. Focus stays where it is, and so does the strip, unless the
+/// layout has to change around the focused window.
+fn command_place_window(
+    mut messages: MessageReader<Event>,
+    windows: Windows,
+    mut strips: Query<&mut LayoutStrip>,
+) {
+    for operation in
+        filter_window_operations(&mut messages, |op| matches!(op, Operation::Place(..)))
+    {
+        let Operation::Place(window_id, position) = operation else {
+            continue;
+        };
+        let Some((_, entity)) = windows.find_managed(*window_id) else {
+            debug!("place: no managed window {window_id}");
+            continue;
+        };
+        let Some(mut strip) = strips.iter_mut().find(|strip| strip.contains(entity)) else {
+            continue;
+        };
+        let Ok(from) = strip.index_of(entity) else {
+            continue;
+        };
+        let to = (*position).min(strip.len() - 1);
+        if from < to {
+            (from..to).for_each(|idx| strip.swap(idx, idx + 1));
+        } else {
+            (to..from).rev().for_each(|idx| strip.swap(idx, idx + 1));
         }
     }
 }

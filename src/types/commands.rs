@@ -221,6 +221,10 @@ pub enum Operation {
     Focus(Direction),
     /// Swaps the current window with another in the specified `Direction`.
     Swap(Direction),
+    /// Moves a window's column to a zero-based position in its strip, without
+    /// focusing it or scrolling to it: for rearranging from elsewhere, like a
+    /// dock showing the strip.
+    Place(i32, usize),
     /// Centers the currently focused window on the display.
     Center,
     /// Resizes the focused window in the given direction.

@@ -845,6 +845,57 @@ fn test_window_swap_keeps_strip_when_in_view() {
         .run(commands);
 }
 
+/// `Place` moves another window's column into place without taking focus from
+/// the focused one.
+#[test]
+fn test_place_moves_a_column_without_focusing_it() {
+    let commands = vec![
+        Event::MenuOpened { window_id: 0 },
+        Event::Command {
+            command: Command::Window(Operation::Focus(Direction::First)),
+        },
+        Event::Command {
+            command: Command::Window(Operation::Place(2, 0)),
+        },
+        // Past the end is the end.
+        Event::Command {
+            command: Command::Window(Operation::Place(2, 9)),
+        },
+    ];
+
+    let config: Config = (
+        MainOptions {
+            animation_speed: Some(10000.0),
+            ..Default::default()
+        },
+        vec![],
+    )
+        .into();
+
+    fn x(world: &mut World, id: i32) -> i32 {
+        let entity = find_window_entity(id, world);
+        world
+            .get::<Window>(entity)
+            .expect("finding window")
+            .frame()
+            .min
+            .x
+    }
+
+    TestHarness::new()
+        .with_config(config)
+        .with_windows(3)
+        .on_iteration(2, |world, _state| {
+            assert_focused!(world, 0);
+            assert!(x(world, 2) < x(world, 0) && x(world, 0) < x(world, 1));
+        })
+        .on_iteration(3, |world, _state| {
+            assert_focused!(world, 0);
+            assert!(x(world, 0) < x(world, 1) && x(world, 1) < x(world, 2));
+        })
+        .run(commands);
+}
+
 #[test]
 fn test_rapid_focus_not_swallowed() {
     let mut harness = TestHarness::new().with_windows(5);
