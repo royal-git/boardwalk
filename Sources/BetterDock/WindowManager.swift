@@ -5,7 +5,7 @@ import BetterDockCore
 /// Maps an Accessibility window to its window number. Private, but it's what
 /// window managers like Rectangle and AltTab use; there's no public equivalent.
 @_silgen_name("_AXUIElementGetWindow")
-private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
 /// Moves and resizes other apps' windows through the Accessibility API. macOS only
 /// keeps windows clear of its own Dock, so layouts here use the screen minus the
@@ -54,6 +54,20 @@ final class WindowManager {
     func raise(window windowID: Int, of app: NSRunningApplication) {
         guard AXIsProcessTrusted(),
               let window = standardWindows(of: app.processIdentifier)[CGWindowID(windowID)] else { return }
+        AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    }
+
+    /// Brings back one of an app's minimized windows, in front of its others.
+    func unminimize(window windowID: Int, of app: NSRunningApplication) {
+        guard AXIsProcessTrusted() else { return }
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        let windows = (value(of: element, kAXWindowsAttribute) as? [AXUIElement]) ?? []
+        guard let window = windows.first(where: { window in
+            var id: CGWindowID = 0
+            return _AXUIElementGetWindow(window, &id) == .success && Int(id) == windowID
+        }) else { return }
+        AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
         AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
     }

@@ -13,8 +13,15 @@ struct DockTile: Identifiable {
     /// Whether the app has a window on this tile's desktop; running apps without
     /// one get a hollow dot.
     var hasWindowHere = false
-    /// In Paneru's strip, a tile stands for one window rather than the whole app.
+    /// In Paneru's strip, a tile stands for one window rather than the whole app;
+    /// so does a minimized window's.
     var windowID: Int?
+    /// A minimized window's tile: clicking it brings the window back.
+    var isMinimized = false
+    /// When the app started opening, while it hasn't finished launching.
+    var openingSince: Date?
+    /// The badge the app has put on its Dock icon, like Mail's unread count.
+    var badge: String?
 }
 
 /// A column of Paneru's strip in the dock: one window's tile, or a stack's.
@@ -36,8 +43,10 @@ struct DesktopTiles {
     var strip: [TileColumn] = []
     /// Folders, files and links.
     var others: [DockTile] = []
+    /// Windows minimized from this desktop, in the order they were minimized.
+    var minimized: [DockTile] = []
 
-    var isEmpty: Bool { apps.isEmpty && strip.isEmpty && others.isEmpty }
+    var isEmpty: Bool { apps.isEmpty && strip.isEmpty && others.isEmpty && minimized.isEmpty }
 }
 
 /// Owns the library of per-desktop docks, follows macOS desktop switches, and
@@ -56,6 +65,15 @@ final class AppModel: ObservableObject {
     /// A window's column being moved in Paneru's strip: the dock shows it in its
     /// new place while Paneru catches up, and back where it was if that fails.
     @Published private var pendingMove: (desktop: Int, window: Int, column: Int)?
+    /// Windows minimized into Apple's Dock, in the order they were minimized.
+    @Published private(set) var minimized: [MinimizedWindow] = []
+    /// The badges apps have put on their Dock icons, by app path.
+    @Published private(set) var badges: [String: String] = [:]
+    /// Apps opened from their tile that aren't running yet, by path, and when.
+    @Published private var opened: [String: Date] = [:]
+    /// Apps that are running but haven't finished launching, by process id: when
+    /// they started opening, and the watch for them finishing.
+    @Published private var launching: [pid_t: (since: Date, watch: NSKeyValueObservation)] = [:]
     @Published var lastError: String?
 
     private let storage = LibraryStorage()
@@ -66,7 +84,19 @@ final class AppModel: ObservableObject {
     private var panels: [Int: DockPanelController] = [:]
     static let allDesktops = 0
     private var observers: [NSObjectProtocol] = []
+    private var runningObservation: NSKeyValueObservation?
     private var windowTimer: Timer?
+    /// The desktop each window was last seen on, by window id, so a minimized
+    /// window shows on the desktop it came from: macOS takes it off every desktop.
+    private var lastDesktop: [Int: Int] = [:]
+    private lazy var minimizedWindows: MinimizedWindows = MinimizedWindows { [weak self] in
+        guard let self else { return }
+        minimized = minimizedWindows.windows
+        // Its app's dot changes with it.
+        refreshWindows(notify: false)
+    }
+    /// How long an app shows as opening at most: some never say they've finished.
+    private static let openingLimit: TimeInterval = 30
     private lazy var windowManager = WindowManager { [weak self] in
         guard let self else { return nil }
         let panel = desktops.current().flatMap { self.panels[$0.id] } ?? panels[Self.allDesktops]
@@ -174,13 +204,15 @@ final class AppModel: ObservableObject {
             panels[id] = panel
         }
         refreshWindows(notify: false)
+        refreshBadges()
     }
 
     // MARK: Dock contents
 
     /// The tiles for a desktop's dock: pinned apps, then open apps with windows
     /// there; while Paneru arranges the desktop, a tile for each window in its
-    /// strip, in the same order; then folders, files and links.
+    /// strip, in the same order; then folders, files and links; then windows
+    /// minimized from there.
     func tiles(onDesktop desktopID: Int) -> DesktopTiles {
         guard let space = space(onDesktop: desktopID) else { return DesktopTiles() }
         let here = windows.byDesktop[desktopID] ?? []
@@ -202,10 +234,10 @@ final class AppModel: ObservableObject {
                 let key = DockItem.app(path).identityKey
                 let pinnedItem = pinnedApps.first { $0.identityKey == key }
                 let item = pinnedItem ?? .app(path, label: app.localizedName)
-                // One pin badge per app, however many windows it has.
-                let showsPin = pinnedItem != nil && badged.insert(key).inserted
-                return DockTile(id: "window:\(window.id)", item: item, app: app, pinned: showsPin,
-                                hasWindowHere: true, windowID: window.id)
+                // One pin, and one of the app's own badges, per app, however many windows it has.
+                let isFirst = badged.insert(key).inserted
+                return DockTile(id: "window:\(window.id)", item: item, app: app, pinned: pinnedItem != nil && isFirst,
+                                hasWindowHere: true, windowID: window.id, badge: isFirst ? badge(ofAppAt: path) : nil)
             }
             if !tiles.isEmpty { result.strip.append(TileColumn(tiles: tiles, isInView: column.isInView)) }
         }
@@ -214,7 +246,9 @@ final class AppModel: ObservableObject {
             let app = runningApp(at: item.location)
             if let app, inStrip.contains(app.processIdentifier) { return nil }
             return DockTile(id: item.identityKey, item: item, app: app, pinned: true,
-                            hasWindowHere: app.map { here.contains($0.processIdentifier) } ?? false)
+                            hasWindowHere: app.map { here.contains($0.processIdentifier) } ?? false,
+                            openingSince: openingSince(ofAppAt: item.location, app),
+                            badge: badge(ofAppAt: item.location))
         }
         var seen = Set(pinnedApps.map(\.identityKey))
         for app in running where !inStrip.contains(app.processIdentifier) {
@@ -230,13 +264,45 @@ final class AppModel: ObservableObject {
             let item = DockItem.app(path, label: app.localizedName)
             guard seen.insert(item.identityKey).inserted else { continue }
             result.apps.append(DockTile(id: item.identityKey, item: item, app: app, pinned: false,
-                                        hasWindowHere: state.hasWindowHere))
+                                        hasWindowHere: state.hasWindowHere,
+                                        openingSince: openingSince(ofAppAt: path, app),
+                                        badge: badge(ofAppAt: path)))
         }
 
         result.others = resolved.filter { !$0.isApp }.map {
             DockTile(id: $0.identityKey, item: $0, app: nil, pinned: true)
         }
+
+        // Shown on the desktop each came from, or everywhere when that isn't
+        // known, like for one minimized before BetterDock started.
+        result.minimized = minimized.compactMap { window in
+            guard windows.owners[window.id] != nil,
+                  desktopID == Self.allDesktops || (lastDesktop[window.id] ?? desktopID) == desktopID,
+                  let app = running.first(where: { $0.processIdentifier == window.pid }),
+                  let path = app.bundleURL?.path else { return nil }
+            let item = DockItem.app(path, label: window.title.isEmpty ? app.localizedName : window.title)
+            return DockTile(id: "minimized:\(window.id)", item: item, app: app, pinned: false,
+                            windowID: window.id, isMinimized: true)
+        }
         return result
+    }
+
+    /// When an app started opening, while it's still opening: from its tile a
+    /// moment ago and not running yet, or running and not finished launching.
+    /// Some apps never say they've finished, so for `openingLimit` at most.
+    private func openingSince(ofAppAt path: String, _ app: NSRunningApplication?) -> Date? {
+        let since: Date?
+        if let app {
+            since = launching[app.processIdentifier]?.since
+        } else {
+            since = opened[(path as NSString).standardizingPath]
+        }
+        guard let since, Date().timeIntervalSince(since) < Self.openingLimit else { return nil }
+        return since
+    }
+
+    private func badge(ofAppAt path: String) -> String? {
+        badges[(path as NSString).standardizingPath]
     }
 
     /// The running app a strip window belongs to: from the window list, or by
@@ -252,19 +318,69 @@ final class AppModel: ObservableObject {
         let item = tile.item
         switch item.kind {
         case .app:
-            // A window's tile puts that window in front of its app's others, so it's
-            // the one activating the app focuses; Paneru then slides it into view.
             if let windowID = tile.windowID, let app = tile.app {
-                windowManager.raise(window: windowID, of: app)
+                if tile.isMinimized {
+                    // Back from the Dock, in front of its app's other windows.
+                    windowManager.unminimize(window: windowID, of: app)
+                } else {
+                    // A window's tile puts that window in front of its app's others, so it's
+                    // the one activating the app focuses; Paneru then slides it into view.
+                    windowManager.raise(window: windowID, of: app)
+                }
             }
+            if tile.app == nil { markOpening(item.location) }
             // openApplication also activates a running app and asks it to reopen a window.
             NSWorkspace.shared.openApplication(
                 at: URL(fileURLWithPath: item.location), configuration: NSWorkspace.OpenConfiguration()
-            ) { _, _ in }
+            ) { [weak self] _, error in
+                guard error != nil else { return }
+                DispatchQueue.main.async { self?.stopOpening(item.location) }
+            }
         case .folder, .file:
             NSWorkspace.shared.open(URL(fileURLWithPath: (item.location as NSString).expandingTildeInPath))
         case .url:
             if let url = URL(string: item.location) { NSWorkspace.shared.open(url) }
+        }
+    }
+
+    /// Something dropped on a tile. An app opens the files, folders and links
+    /// dropped on it, as in Apple's Dock; apps dropped on it, and anything dropped
+    /// on a folder, file or link, join this desktop's dock.
+    func drop(_ urls: [URL], on tile: DockTile) {
+        let apps = urls.filter { $0.isFileURL && Self.kind(of: $0) == .app }
+        let documents = urls.filter { !apps.contains($0) }
+        guard tile.item.kind == .app, !documents.isEmpty else {
+            addHere(urls)
+            return
+        }
+        addHere(apps)
+        if tile.app == nil { markOpening(tile.item.location) }
+        NSWorkspace.shared.open(
+            documents, withApplicationAt: URL(fileURLWithPath: tile.item.location),
+            configuration: NSWorkspace.OpenConfiguration()
+        ) { [weak self] _, error in
+            guard error != nil else { return }
+            DispatchQueue.main.async { self?.stopOpening(tile.item.location) }
+        }
+    }
+
+    /// Shows an app opened from its tile as opening until it's running, and from
+    /// then until it has finished launching.
+    private func markOpening(_ path: String) {
+        opened = opened.filter { Date().timeIntervalSince($0.value) < Self.openingLimit }
+        opened[(path as NSString).standardizingPath] = Date()
+        redrawAfterOpeningLimit()
+    }
+
+    /// For an app that couldn't be opened.
+    private func stopOpening(_ path: String) {
+        opened[(path as NSString).standardizingPath] = nil
+    }
+
+    /// Redraws once an app has shown as opening for as long as it may, so it stops.
+    private func redrawAfterOpeningLimit() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.openingLimit + 0.5) { [weak self] in
+            self?.objectWillChange.send()
         }
     }
 
@@ -293,6 +409,11 @@ final class AppModel: ObservableObject {
         windowManager.tileAll()
     }
 
+    /// Slides to the desktop on the left or right, as macOS's shortcut does.
+    func slideDesktop(_ way: DesktopShortcut) {
+        way.press()
+    }
+
     func showInFinder(_ item: DockItem) {
         let url = URL(fileURLWithPath: (item.location as NSString).expandingTildeInPath)
         NSWorkspace.shared.activateFileViewerSelecting([url])
@@ -300,6 +421,18 @@ final class AppModel: ObservableObject {
 
     func quit(_ tile: DockTile) {
         tile.app?.terminate()
+    }
+
+    func forceQuit(_ tile: DockTile) {
+        tile.app?.forceTerminate()
+    }
+
+    func setHidden(_ tile: DockTile, _ hidden: Bool) {
+        if hidden {
+            tile.app?.hide()
+        } else {
+            tile.app?.unhide()
+        }
     }
 
     /// Keep in the current desktop's dock (e.g. an open app that isn't pinned yet).
@@ -380,6 +513,11 @@ final class AppModel: ObservableObject {
             // The window list can lag the switch animation; look once more after it.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.refreshWindows(notify: false) }
         })
+        // Apps are listed here from the moment they start opening, before
+        // didLaunchApplication, so the dock can show them opening.
+        runningObservation = NSWorkspace.shared.observe(\.runningApplications) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.refreshRunning() }
+        }
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 self?.refreshRunning()
@@ -400,14 +538,53 @@ final class AppModel: ObservableObject {
 
     private func refreshRunning() {
         let me = ProcessInfo.processInfo.processIdentifier
-        running = NSWorkspace.shared.runningApplications.filter {
+        let apps = NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && $0.processIdentifier != me
+        }
+        if apps != running { running = apps }
+        watchLaunches()
+        minimizedWindows.follow(running.filter(\.isFinishedLaunching))
+    }
+
+    /// Watches apps that are still opening until they've finished launching, so
+    /// their tiles show them opening till then.
+    private func watchLaunches() {
+        let opening = running.filter { !$0.isFinishedLaunching }
+        let pids = Set(opening.map(\.processIdentifier))
+        if launching.keys.contains(where: { !pids.contains($0) }) {
+            launching = launching.filter { pids.contains($0.key) }
+        }
+        for app in opening where launching[app.processIdentifier] == nil {
+            let path = app.bundleURL.map { ($0.path as NSString).standardizingPath }
+            let watch = app.observe(\.isFinishedLaunching) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.refreshRunning() }
+            }
+            // One opened from its tile carries on from when it was clicked.
+            launching[app.processIdentifier] = (path.flatMap { opened[$0] } ?? Date(), watch)
+            redrawAfterOpeningLimit()
+        }
+        let waiting = opened.filter { path, _ in runningApp(at: path) == nil }
+        if waiting.count != opened.count { opened = waiting }
+    }
+
+    /// Re-reads apps' badges from Apple's Dock, off the main thread.
+    private func refreshBadges() {
+        let systemDock = systemDock
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let badges = systemDock.badges()
+            DispatchQueue.main.async {
+                guard let self, badges != self.badges else { return }
+                self.badges = badges
+            }
         }
     }
 
     /// Re-reads the window list. Publishes only on a change, unless `notify`.
     private func refreshWindows(notify: Bool) {
         let scan = WindowScan.scan(desktops: desktops, fallbackDesktop: Self.allDesktops)
+        // Kept while a window is minimized, and forgotten once it's closed.
+        lastDesktop.merge(scan.desktopByWindow) { $1 }
+        lastDesktop = lastDesktop.filter { scan.owners[$0.key] != nil }
         if scan != windows {
             windows = scan
         } else if notify {

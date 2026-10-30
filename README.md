@@ -22,10 +22,13 @@ BetterDock draws its own dock. It doesn't edit Apple's Dock, because Apple's Doc
   - then ↑ or ↓ for the top or bottom half of those columns: ← ↑ is the top-left quarter, ← → ↓ the bottom of the center third
   - ↩ maximize, C center, T tile every window on this desktop
 
-  Moving other apps' windows needs Accessibility permission, which macOS asks for the first time you arrange; the rest of BetterDock works without it. macOS's own tiling (Fn⌃ arrows, dragging a window to a screen edge) doesn't know about BetterDock and still goes under the dock.
+  Moving other apps' windows needs Accessibility permission, which macOS asks for the first time you arrange. Minimized windows and badges need it too; the rest of BetterDock works without it. macOS's own tiling (Fn⌃ arrows, dragging a window to a screen edge) doesn't know about BetterDock and still goes under the dock.
+- **Minimized windows** show at the right end of the dock of the desktop they came from, as a small window with its app's icon in the corner. Hover one for its title; click it to bring the window back.
+- **Opening apps bounce**, as in Apple's Dock, until they've finished launching, whether you opened them from the dock or somewhere else.
+- **Badges** that apps put on their Dock icons, like Mail's unread count, show on their tiles. BetterDock reads them from Apple's Dock, which keeps them while it's hidden.
 - **Pinning.** Right-click a tile and choose **Keep in Dock** to pin it to this desktop's dock, or tick desktops under **Keep in Dock on ▸**, or **All Desktops**. Pinned apps have a small pin badge; apps without one are only there because they're open. Clicking a pinned app launches it, opens a window if it has none, or takes you to its window on another desktop.
 - **Shared items** stay in the dock on every desktop, for example Finder and Downloads.
-- **Drop to add.** Drag an app, folder, file or link onto the dock to add it to this desktop's dock. Right-click a tile to show it in Finder or quit the app.
+- **Drop to add or open.** Drag a file, folder or link onto an app to open it with that app. Drag an app anywhere onto the dock, or anything else between tiles or onto a folder, to add it to this desktop's dock. Right-click a tile to show it in Finder, hide the app or quit it; hold ⌥ to force quit.
 - **Import.** "Copy Apple's Dock into This Desktop" fills the current desktop's dock from Apple's Dock.
 
 ## How it follows desktops
@@ -61,12 +64,12 @@ Your desktop docks are saved as JSON in `~/Library/Application Support/BetterDoc
 | Path | What's there |
 | --- | --- |
 | `Sources/BetterDockCore` | Plain Foundation code with no UI. It holds the per-desktop dock model (`Space`, one per desktop), the rule for which open apps show on a desktop, JSON storage, the reader for Apple's Dock format (used by import), and window layouts and arrow combos. |
-| `Sources/BetterDock` | The app. It contains the dock panel and its view, desktop and window tracking (`Desktops.swift`), arranging windows (`WindowManager.swift`, `HotKeys.swift`), the menu bar menu, and the editor window. |
+| `Sources/BetterDock` | The app. It contains the dock panel and its view, desktop and window tracking (`Desktops.swift`, `MinimizedWindows.swift`), arranging windows (`WindowManager.swift`, `HotKeys.swift`), the menu bar menu, and the editor window. |
 | `Tests/BetterDockCoreTests` | Unit tests for the core, run with `swift test`. |
 
 ## Not yet
 
-- Notification badges, minimized windows and the Trash, which Apple's Dock shows for free. An app whose windows are all minimized only shows while it's the frontmost app.
+- The Trash, which Apple's Dock shows for free.
 - Reordering tiles by dragging them in the dock itself. For now, reorder them in the editor.
 - Full-screen apps keep the previous desktop's dock, and the dock follows the main display's desktops only.
 

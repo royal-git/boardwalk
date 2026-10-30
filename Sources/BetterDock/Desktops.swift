@@ -108,6 +108,40 @@ struct Desktops {
     }
 }
 
+/// macOS's shortcuts for sliding to the desktop on the left or right (Keyboard
+/// Shortcuts > Mission Control), pressed on the user's behalf. There's no API
+/// for switching desktops, and this way the switch animates as usual.
+enum DesktopShortcut {
+    case left, right
+
+    /// Presses it, unless it's turned off: then the keys would go to the app in
+    /// front instead. Pressing keys for other apps needs Accessibility
+    /// permission, which is asked for the first time.
+    func press() {
+        let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        guard AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary), let (key, flags) = binding else { return }
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: down)
+            event?.flags = flags
+            event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// Its keys: ⌃← and ⌃→ unless changed. Nil while it's turned off.
+    private var binding: (CGKeyCode, CGEventFlags)? {
+        let hotKeys = UserDefaults(suiteName: "com.apple.symbolichotkeys")?.dictionary(forKey: "AppleSymbolicHotKeys")
+        let entry = hotKeys?[self == .left ? "79" : "81"] as? [String: Any]
+        if (entry?["enabled"] as? Bool) == false { return nil }
+        // [character, key code, modifier flags], as macOS stores a changed shortcut.
+        let parameters = (entry?["value"] as? [String: Any])?["parameters"] as? [Int] ?? []
+        let key = parameters.count == 3 ? CGKeyCode(parameters[1]) : (self == .left ? 123 : 124)
+        var flags = parameters.count == 3 ? CGEventFlags(rawValue: UInt64(parameters[2])) : .maskControl
+        // Arrow keys always come with these, as a real keyboard sends them.
+        if (123...126).contains(key) { flags.formUnion([.maskSecondaryFn, .maskNumericPad]) }
+        return (key, flags)
+    }
+}
+
 /// Which apps have windows on which desktop. Only window ids, owners and sizes are
 /// read from the public window list, which needs no Screen Recording permission.
 enum WindowScan {
@@ -124,6 +158,8 @@ enum WindowScan {
         var anywhere: Set<pid_t> = []
         /// The app owning each window, by window id.
         var owners: [Int: pid_t] = [:]
+        /// The desktop each window is on, by window id, for windows on just one.
+        var desktopByWindow: [Int: Int] = [:]
     }
 
     /// Asks macOS which desktop each window is on, rather than going by what's on
@@ -135,7 +171,9 @@ enum WindowScan {
         for (windowID, pid) in all {
             result.owners[windowID] = pid
             let open = desktops.isOrderedIn(window: windowID)
-            for desktop in desktops.desktops(ofWindow: windowID) {
+            let on = desktops.desktops(ofWindow: windowID)
+            if on.count == 1 { result.desktopByWindow[windowID] = on[0] }
+            for desktop in on {
                 if open {
                     result.byDesktop[desktop, default: []].insert(pid)
                     result.openAnywhere.insert(pid)
