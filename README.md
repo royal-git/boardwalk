@@ -4,7 +4,7 @@
 
 Boardwalk gives each macOS desktop its own dock, like Arc's spaces for the Mac. It also lays each desktop's windows side by side in a strip you slide through with three fingers.
 
-[![Two desktops, each with its own dock: the windows slide in a strip, one is moved from the dock and stretched, and the dock changes with the desktop](docs/showcase.webp)](docs/showcase.mp4)
+[![Two desktops, each with its own dock: the windows slide in a strip, one is moved from the dock and stretched, and the dock changes with the desktop](docs/showcase.avif)](docs/showcase.mp4)
 
 Two of the real docks, each on its own desktop:
 
@@ -52,7 +52,7 @@ Boardwalk draws its own dock in Swift. It runs [Paneru](https://github.com/karin
 | --- | --- |
 | `Sources/Boardwalk` | The app: dock, menu bar, editor. |
 | `Sources/BoardwalkCore` | Model, storage and window layouts, tested with `swift test`. |
-| `docs/showcase.html` | The animation above. `node scripts/render-showcase.mjs` renders it to `docs/showcase.webp` and `.mp4`. |
+| `docs/showcase.html` | The animation above. `node scripts/render-showcase.mjs` renders it to `docs/showcase.avif` and `.mp4`. |
 | `paneru` | The window manager, with its history. Tested with `cargo test`; `git subtree pull --prefix=paneru https://github.com/karinushka/paneru main` brings in upstream. |
 
 ## Limitations

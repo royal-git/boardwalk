@@ -1,11 +1,11 @@
 // Renders docs/showcase.html, the animated picture of Boardwalk at work, into
-// docs/showcase.mp4 and docs/showcase.webp, an animated image the README shows
+// docs/showcase.mp4 and docs/showcase.avif, an animated image the README shows
 // (GitHub plays no video kept in the repo). Each frame is drawn at its exact
 // moment in headless Chrome, so nothing depends on the screen or timing.
-// Needs Google Chrome, ffmpeg and img2webp (brew install ffmpeg webp).
+// Needs Google Chrome, and ffmpeg with SVT-AV1 (brew install ffmpeg).
 //   node scripts/render-showcase.mjs
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -42,15 +42,15 @@ try {
   process.stdout.write(`\rframes ${frames}/${frames}\n`);
 
   const ffmpeg = (...args) => execFileSync('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', ...args], { stdio: 'inherit' });
-  ffmpeg('-framerate', String(fps), '-i', join(work, 'f%05d.png'),
-    '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
+  const input = ['-framerate', String(fps), '-i', join(work, 'f%05d.png')];
+  ffmpeg(...input, '-c:v', 'libx264', '-preset', 'slow', '-crf', '18', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
     join(root, 'docs/showcase.mp4'));
-
-  // The animated image: half the frames, at 960 wide, which is as wide as GitHub shows it.
-  ffmpeg('-framerate', String(fps), '-i', join(work, 'f%05d.png'), '-vf', 'fps=30,scale=960:-1:flags=lanczos', join(work, 'w%04d.png'));
-  const small = readdirSync(work).filter((name) => /^w\d+\.png$/.test(name)).sort().map((name) => join(work, name));
-  execFileSync('img2webp', ['-loop', '0', '-lossy', '-q', '72', '-m', '6', '-d', '33', ...small, '-o', join(root, 'docs/showcase.webp')], { stdio: 'inherit' });
-  console.log('Wrote docs/showcase.mp4 and docs/showcase.webp');
+  // AV1 rather than animated WebP, whose lossy frames reuse blocks of earlier
+  // ones and leave stale squares behind. No temporal filtering: it's meant for
+  // camera footage.
+  ffmpeg(...input, '-c:v', 'libsvtav1', '-preset', '5', '-crf', '30', '-pix_fmt', 'yuv420p',
+    '-svtav1-params', 'enable-tf=0', '-loop', '0', join(root, 'docs/showcase.avif'));
+  console.log('Wrote docs/showcase.mp4 and docs/showcase.avif');
 } finally {
   chrome.kill();
   rmSync(work, { recursive: true, force: true });
