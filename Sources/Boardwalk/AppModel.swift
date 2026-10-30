@@ -13,15 +13,18 @@ struct DockTile: Identifiable {
     /// Whether the app has a window on this tile's desktop; running apps without
     /// one get a hollow dot.
     var hasWindowHere = false
-    /// In Paneru's strip, a tile stands for one window rather than the whole app;
-    /// so does a minimized window's.
-    var windowID: Int?
+    /// In Paneru's strip, the windows a tile stands for, in the strip's order: all
+    /// of its app's there, as Apple's Dock has one icon per app. A minimized
+    /// window's tile stands for that window.
+    var windowIDs: [Int] = []
     /// A minimized window's tile: clicking it brings the window back.
     var isMinimized = false
     /// When the app started opening, while it hasn't finished launching.
     var openingSince: Date?
     /// The badge the app has put on its Dock icon, like Mail's unread count.
     var badge: String?
+
+    var windowID: Int? { windowIDs.first }
 }
 
 /// A column of Paneru's strip in the dock: one window's tile, or a stack's.
@@ -32,6 +35,9 @@ struct TileColumn: Identifiable {
 
     var id: String { tiles.first?.id ?? "" }
     var windowID: Int? { tiles.first?.windowID }
+    /// Dragging moves a column to another place in the strip, which only makes
+    /// sense when each of its tiles is one window.
+    var isMovable: Bool { tiles.allSatisfy { $0.windowIDs.count == 1 } }
 }
 
 /// A desktop's dock contents, in the order they're shown.
@@ -39,14 +45,16 @@ struct DesktopTiles {
     /// Pinned apps, then other open apps. While Paneru arranges the desktop, apps
     /// with a window in its strip show there instead.
     var apps: [DockTile] = []
-    /// Paneru's strip, left to right: a tile for each window.
+    /// Paneru's strip, left to right: a tile for each app, where its first window is.
     var strip: [TileColumn] = []
+    /// Windows floating over the strip: a tile for each app again.
+    var floating: [DockTile] = []
     /// Folders, files and links.
     var others: [DockTile] = []
     /// Windows minimized from this desktop, in the order they were minimized.
     var minimized: [DockTile] = []
 
-    var isEmpty: Bool { apps.isEmpty && strip.isEmpty && others.isEmpty && minimized.isEmpty }
+    var isEmpty: Bool { apps.isEmpty && strip.isEmpty && floating.isEmpty && others.isEmpty && minimized.isEmpty }
 }
 
 /// Owns the library of per-desktop docks, follows macOS desktop switches, and
@@ -75,6 +83,14 @@ final class AppModel: ObservableObject {
     /// they started opening, and the watch for them finishing.
     @Published private var launching: [pid_t: (since: Date, watch: NSKeyValueObservation)] = [:]
     @Published var lastError: String?
+    /// Apps whose windows each get their own tile in the strip, rather than sharing
+    /// one, by identity key.
+    @Published private var ungrouped = Set(UserDefaults.standard.stringArray(forKey: AppModel.ungroupedKey) ?? []) {
+        didSet { UserDefaults.standard.set(ungrouped.sorted(), forKey: Self.ungroupedKey) }
+    }
+    private static let ungroupedKey = "appsWithWindowsApart"
+    /// What shows above a tile while the pointer rests on it.
+    let previews = WindowPreviews()
 
     private let storage = LibraryStorage.standard
     private let systemDock = SystemDock()
@@ -128,6 +144,8 @@ final class AppModel: ObservableObject {
         refreshRunning()
         refreshWindows(notify: false)
         observeWorkspace()
+        previews.pick = { [weak self] in self?.bringForward(window: $0, of: $1) }
+        previews.float = { [weak self] in self?.setFloating(window: $0, $1) }
     }
 
     deinit {
@@ -213,8 +231,8 @@ final class AppModel: ObservableObject {
     // MARK: Dock contents
 
     /// The tiles for a desktop's dock: pinned apps, then open apps with windows
-    /// there; while Paneru arranges the desktop, a tile for each window in its
-    /// strip, in the same order; then folders, files and links; then windows
+    /// there; while Paneru arranges the desktop, a tile for each app in its
+    /// strip, in the order of their first windows; then folders, files and links; then windows
     /// minimized from there.
     func tiles(onDesktop desktopID: Int) -> DesktopTiles {
         guard let space = space(onDesktop: desktopID) else { return DesktopTiles() }
@@ -229,20 +247,51 @@ final class AppModel: ObservableObject {
             strip = strip?.moving(columnOf: move.window, to: move.column)
         }
         var inStrip = Set<pid_t>()
+        // One tile per app, where its first window is, and the app's other windows
+        // join it: where each app's tile is, by app, as its column and place there.
+        // An app set not to group its windows gets a tile for each.
+        var placed: [String: (column: Int, tile: Int)] = [:]
         var badged = Set<String>()
+        /// A new tile for a window of the strip's, or a floating one's.
+        func tile(for window: Strip.Window, of app: NSRunningApplication, at path: String, key: String) -> DockTile {
+            let pinnedItem = pinnedApps.first { $0.identityKey == key }
+            // One pin, and one of the app's own badges, per app, however many tiles it has.
+            let isFirst = badged.insert(key).inserted
+            return DockTile(id: "window:\(window.id)", item: pinnedItem ?? .app(path, label: app.localizedName),
+                            app: app, pinned: pinnedItem != nil && isFirst, hasWindowHere: true,
+                            windowIDs: [window.id], badge: isFirst ? badge(ofAppAt: path) : nil)
+        }
         for column in strip?.columns ?? [] {
-            let tiles = column.windows.compactMap { window -> DockTile? in
-                guard let app = owner(of: window), let path = app.bundleURL?.path else { return nil }
+            var tiles: [DockTile] = []
+            for window in column.windows {
+                guard let app = owner(of: window), let path = app.bundleURL?.path else { continue }
                 inStrip.insert(app.processIdentifier)
                 let key = DockItem.app(path).identityKey
-                let pinnedItem = pinnedApps.first { $0.identityKey == key }
-                let item = pinnedItem ?? .app(path, label: app.localizedName)
-                // One pin, and one of the app's own badges, per app, however many windows it has.
-                let isFirst = badged.insert(key).inserted
-                return DockTile(id: "window:\(window.id)", item: item, app: app, pinned: pinnedItem != nil && isFirst,
-                                hasWindowHere: true, windowID: window.id, badge: isFirst ? badge(ofAppAt: path) : nil)
+                if !ungrouped.contains(key), let at = placed[key] {
+                    if at.column == result.strip.count {
+                        tiles[at.tile].windowIDs.append(window.id)
+                    } else {
+                        result.strip[at.column].tiles[at.tile].windowIDs.append(window.id)
+                    }
+                    continue
+                }
+                placed[key] = (result.strip.count, tiles.count)
+                tiles.append(tile(for: window, of: app, at: path, key: key))
             }
             if !tiles.isEmpty { result.strip.append(TileColumn(tiles: tiles, isInView: column.isInView)) }
+        }
+        // Floating windows after the strip, grouped the same way.
+        var floats: [String: Int] = [:]
+        for window in strip?.floating ?? [] {
+            guard let app = owner(of: window), let path = app.bundleURL?.path else { continue }
+            inStrip.insert(app.processIdentifier)
+            let key = DockItem.app(path).identityKey
+            if !ungrouped.contains(key), let at = floats[key] {
+                result.floating[at].windowIDs.append(window.id)
+                continue
+            }
+            floats[key] = result.floating.count
+            result.floating.append(tile(for: window, of: app, at: path, key: key))
         }
 
         result.apps = pinnedApps.compactMap { item in
@@ -285,7 +334,7 @@ final class AppModel: ObservableObject {
                   let path = app.bundleURL?.path else { return nil }
             let item = DockItem.app(path, label: window.title.isEmpty ? app.localizedName : window.title)
             return DockTile(id: "minimized:\(window.id)", item: item, app: app, pinned: false,
-                            windowID: window.id, isMinimized: true)
+                            windowIDs: [window.id], isMinimized: true)
         }
         return result
     }
@@ -318,6 +367,7 @@ final class AppModel: ObservableObject {
     }
 
     func open(_ tile: DockTile) {
+        previews.hide()
         let item = tile.item
         switch item.kind {
         case .app:
@@ -326,9 +376,9 @@ final class AppModel: ObservableObject {
                     // Back from the Dock, in front of its app's other windows.
                     windowManager.unminimize(window: windowID, of: app)
                 } else {
-                    // A window's tile puts that window in front of its app's others, so it's
-                    // the one activating the app focuses; Paneru then slides it into view.
-                    windowManager.raise(window: windowID, of: app)
+                    // A strip tile puts one of its windows in front of its app's others, so
+                    // it's the one activating the app focuses; Paneru then slides it into view.
+                    windowManager.raise(window: window(toRaise: tile, of: app), of: app)
                 }
             }
             if tile.app == nil { markOpening(item.location) }
@@ -343,6 +393,76 @@ final class AppModel: ObservableObject {
             NSWorkspace.shared.open(URL(fileURLWithPath: (item.location as NSString).expandingTildeInPath))
         case .url:
             if let url = URL(string: item.location) { NSWorkspace.shared.open(url) }
+        }
+    }
+
+    /// The window a strip tile's click brings forward. With several, it's the app's
+    /// focused one, or the next one along the strip when the app is already in
+    /// front, so clicking again goes through them.
+    private func window(toRaise tile: DockTile, of app: NSRunningApplication) -> Int {
+        let ids = tile.windowIDs
+        guard ids.count > 1, let index = windowManager.focusedWindow(of: app).flatMap(ids.firstIndex(of:)) else {
+            return ids[0]
+        }
+        return app.isActive ? ids[(index + 1) % ids.count] : ids[index]
+    }
+
+    // MARK: Window previews
+
+    /// The pointer came to a tile: once it rests there, the windows the tile
+    /// stands for show above it, a strip tile's own or an app's on this desktop.
+    /// `frame` is where the tile is in its dock.
+    func hoverBegan(_ tile: DockTile, onDesktop desktopID: Int, frame: CGRect) {
+        guard tile.item.kind == .app, tile.hasWindowHere, !tile.isMinimized, let app = tile.app,
+              let panel = panels[desktopID] ?? panels[Self.allDesktops] else {
+            previews.hide()
+            return
+        }
+        previews.show(tileID: tile.id) { [weak self] in
+            guard let self else { return nil }
+            // Without Accessibility there are no titles, and an app tile has no windows to show.
+            let titles = windowManager.titles(of: app)
+            let ids = tile.windowIDs.isEmpty ? titles.keys.filter { self.isOnDesktop($0, desktopID) }.sorted() : tile.windowIDs
+            let name = app.localizedName ?? tile.item.displayName
+            return WindowPreviews.Request(
+                app: app,
+                windows: ids.map {
+                    PreviewWindow(id: $0, title: titles[$0].flatMap { $0.isEmpty ? nil : $0 } ?? name,
+                                  floating: self.isFloating(window: $0))
+                },
+                anchor: panel.anchor(forTileAt: frame)
+            )
+        }
+    }
+
+    func hoverEnded(_ tile: DockTile) {
+        previews.leave(tileID: tile.id)
+    }
+
+    /// Whether a window floats over its desktop's strip, or is in it; nil when
+    /// Paneru doesn't arrange it.
+    func isFloating(window windowID: Int) -> Bool? {
+        strips.values.lazy.compactMap { $0.isFloating(windowID) }.first
+    }
+
+    /// Floats a window over its desktop's strip, or tiles it back in.
+    func setFloating(window windowID: Int, _ floating: Bool) {
+        previews.hide()
+        guard let desktop = strips.first(where: { $0.value.isFloating(windowID) != nil })?.key else { return }
+        paneru.setFloating(window: windowID, floating, onDesktop: desktop) { _ in }
+    }
+
+    private func isOnDesktop(_ windowID: Int, _ desktopID: Int) -> Bool {
+        desktopID == Self.allDesktops || windows.desktopByWindow[windowID] == desktopID
+    }
+
+    /// A window picked in a preview: in front of its app's others, then its app
+    /// activated, as a strip tile's click does.
+    private func bringForward(window windowID: Int, of app: NSRunningApplication) {
+        previews.hide()
+        windowManager.raise(window: windowID, of: app)
+        if let url = app.bundleURL {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
         }
     }
 
@@ -454,6 +574,20 @@ final class AppModel: ObservableObject {
             library.share(item)
         } else if let id = library.activeSpaceID {
             library.unshare(item, keepingIn: id)
+        }
+    }
+
+    /// Whether an app's windows share one tile in the strip, as they do unless
+    /// turned off for it.
+    func groupsWindows(of item: DockItem) -> Bool {
+        !ungrouped.contains(item.identityKey)
+    }
+
+    func setGroupsWindows(of item: DockItem, _ grouped: Bool) {
+        if grouped {
+            ungrouped.remove(item.identityKey)
+        } else {
+            ungrouped.insert(item.identityKey)
         }
     }
 

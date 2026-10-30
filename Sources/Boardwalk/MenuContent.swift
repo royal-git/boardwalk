@@ -23,6 +23,9 @@ struct MenuContent: View {
         Button("Copy Apple's Dock into This Desktop") {
             model.importAppleDock()
         }
+        if WindowPreviews.canTakePictures {
+            PicturesToggle(previews: model.previews)
+        }
 
         if let error = model.lastError {
             Divider()
@@ -40,5 +43,15 @@ struct MenuContent: View {
     private func showEditor() {
         openWindow(id: SpacesEditor.windowID)
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+/// Pictures in the windows' previews, which macOS asks Screen Recording
+/// permission for when they're first turned on.
+private struct PicturesToggle: View {
+    @ObservedObject var previews: WindowPreviews
+
+    var body: some View {
+        Toggle("Show Pictures in Window Previews", isOn: $previews.showsPictures)
     }
 }

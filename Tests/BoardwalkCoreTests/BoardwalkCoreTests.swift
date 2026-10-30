@@ -348,6 +348,8 @@ final class PaneruStateTests: XCTestCase {
 
         let here = try XCTUnwrap(strips[3])
         XCTAssertEqual(here.columns.map { $0.windows.map(\.id) }, [[10], [11, 12], [13]], "floating windows aren't in the strip")
+        XCTAssertEqual(here.floating, [Strip.Window(id: 14, bundleID: "com.apple.systempreferences")])
+        XCTAssertEqual([14, 12, 20].map(here.isFloating), [true, false, nil], "window 20 is on another desktop")
         XCTAssertEqual(here.columns.map(\.isInView), [true, true, false])
         XCTAssertEqual(here.columns[1].windows[1].bundleID, "com.spotify.client")
         XCTAssertEqual(strips[1]?.columns.map { $0.windows.map(\.id) }, [[20]])

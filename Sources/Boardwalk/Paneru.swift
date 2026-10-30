@@ -5,7 +5,7 @@ import Foundation
 /// Follows Paneru, the scrolling window manager, when it's running (see
 /// `PaneruDaemon`, which runs the one that comes with the app):
 /// each desktop's strip of windows, for the dock to show in the same order, and
-/// moves windows along it when they're dragged in the dock. Talks to Paneru
+/// moves windows along it when they're dragged in the dock, or floats them over it. Talks to Paneru
 /// through its command line tool. Without it, nothing here does anything
 /// and the dock keeps its usual order. Used from the main thread only.
 final class Paneru {
@@ -92,18 +92,13 @@ final class Paneru {
     /// Moves the column holding `windowID` to place `index` of `desktop`'s strip,
     /// leaving focus where it is. `done` gets whether Paneru put it there.
     func move(window windowID: Int, toColumn index: Int, onDesktop desktop: Int, done: @escaping (Bool) -> Void) {
-        queue.async { [weak self] in
-            let strips = Self.move(windowID, toColumn: index, onDesktop: desktop)
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let strips, self.isRunning {
-                    self.publish(strips)
-                } else {
-                    self.readLayout()
-                }
-                done(strips != nil)
-            }
-        }
+        change({ Self.move(windowID, toColumn: index, onDesktop: desktop) }, done: done)
+    }
+
+    /// Floats a window of `desktop`'s over its strip, where Paneru pops it fully
+    /// on screen, or tiles it back in. `done` gets whether Paneru did it.
+    func setFloating(window windowID: Int, _ floating: Bool, onDesktop desktop: Int, done: @escaping (Bool) -> Void) {
+        change({ Self.setFloating(windowID, floating, onDesktop: desktop) }, done: done)
     }
 
     // MARK: Private
@@ -166,6 +161,23 @@ final class Paneru {
         }
     }
 
+    /// Runs `work` on `queue`, then shows the layout it ends with, or reads it
+    /// again if it failed.
+    private func change(_ work: @escaping () -> [Int: Strip]?, done: @escaping (Bool) -> Void) {
+        queue.async { [weak self] in
+            let strips = work()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                if let strips, self.isRunning {
+                    self.publish(strips)
+                } else {
+                    self.readLayout()
+                }
+                done(strips != nil)
+            }
+        }
+    }
+
     private func publish(_ strips: [Int: Strip]) {
         guard strips != self.strips else { return }
         self.strips = strips
@@ -183,6 +195,23 @@ final class Paneru {
             return strips?[desktop]?.column(of: windowID) == index
         })
         return placed ? strips : nil
+    }
+
+    /// Does the floating or tiling, on `queue`. Paneru's command switches between
+    /// the two, so it's only sent when the window isn't that way already. Returns
+    /// the layout once it is, or nil if the window isn't on `desktop` or Paneru
+    /// didn't take the command in time.
+    private static func setFloating(_ windowID: Int, _ floating: Bool, onDesktop desktop: Int) -> [Int: Strip]? {
+        guard let now = layout()?[desktop]?.isFloating(windowID) else { return nil }
+        if now != floating {
+            guard run(["send-cmd", "window", "manage", String(windowID)]) != nil else { return nil }
+        }
+        var strips: [Int: Strip]?
+        let changed = wait(until: {
+            strips = layout()
+            return strips?[desktop]?.isFloating(windowID) == floating
+        })
+        return changed ? strips : nil
     }
 
     private static func layout() -> [Int: Strip]? {

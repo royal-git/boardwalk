@@ -2,7 +2,8 @@ import BoardwalkCore
 import SwiftUI
 
 /// One desktop's dock: the desktop's badge and dots on the left, then its apps,
-/// then (with Paneru) its strip of windows, then its folders, files and links.
+/// then (with Paneru) its strip of windows and those floating over it, then its
+/// folders, files and links.
 struct DockView: View {
     @EnvironmentObject private var model: AppModel
     let desktopID: Int
@@ -45,13 +46,19 @@ struct DockView: View {
                 if !tiles.apps.isEmpty { Separator() }
                 StripView(columns: tiles.strip, size: Self.tileSize, desktopID: desktopID)
             }
-            if !tiles.others.isEmpty {
+            if !tiles.floating.isEmpty {
                 if !tiles.apps.isEmpty || !tiles.strip.isEmpty { Separator() }
+                ForEach(tiles.floating) { TileView(tile: $0, size: Self.tileSize, desktopID: desktopID) }
+            }
+            if !tiles.others.isEmpty {
+                if !tiles.apps.isEmpty || !tiles.strip.isEmpty || !tiles.floating.isEmpty { Separator() }
                 ForEach(tiles.others) { TileView(tile: $0, size: Self.tileSize, desktopID: desktopID) }
             }
             // At the end, where Apple's Dock puts them.
             if !tiles.minimized.isEmpty {
-                if !tiles.apps.isEmpty || !tiles.strip.isEmpty || !tiles.others.isEmpty { Separator() }
+                if !tiles.apps.isEmpty || !tiles.strip.isEmpty || !tiles.floating.isEmpty || !tiles.others.isEmpty {
+                    Separator()
+                }
                 ForEach(tiles.minimized) { WindowCard(tile: $0, size: Self.tileSize) }
             }
             if tiles.isEmpty {
@@ -64,9 +71,9 @@ struct DockView: View {
     }
 }
 
-/// Paneru's strip of windows, a tile each, in the order they're laid out: stacked
-/// windows share a plate, and under the ones on screen the dots join into a bar.
-/// Dragging a column sideways moves its windows to that place in the strip.
+/// Paneru's strip of windows in the order they're laid out, a tile per app:
+/// stacked windows share a plate, and under the ones on screen the dots join
+/// into a bar. Dragging a column sideways moves its windows to that place in the strip.
 private struct StripView: View {
     @EnvironmentObject private var model: AppModel
     let columns: [TileColumn]
@@ -108,7 +115,8 @@ private struct StripView: View {
                 })
                 .anchorPreference(key: InViewBounds.self, value: .bounds) { column.isInView ? [$0] : [] }
                 // Over the tiles' own clicks: a click that doesn't move is still a click.
-                .highPriorityGesture(reorder(column))
+                // An app's tile with several windows stays put: its windows may be anywhere.
+                .highPriorityGesture(reorder(column), including: column.isMovable ? .all : .subviews)
                 .zIndex(isDragged ? 1 : 0)
             }
         }
@@ -133,6 +141,7 @@ private struct StripView: View {
     private func reorder(_ column: TileColumn) -> some Gesture {
         DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.space))
             .onChanged { value in
+                if dragging == nil { model.previews.hide() }
                 dragging = (column.id, value.translation.width)
             }
             .onEnded { value in
@@ -296,6 +305,8 @@ private struct TileView: View {
     @State private var hovering = false
     /// Something's being dragged over an app's tile: it opens what's dropped.
     @State private var targeted = false
+    /// Where the tile is in the dock, for its preview to go above it.
+    @State private var frame = CGRect.zero
 
     var body: some View {
         Button {
@@ -312,6 +323,9 @@ private struct TileView: View {
                             PinBadge()
                         }
                     }
+                    .overlay(alignment: .bottomTrailing) {
+                        if tile.windowIDs.count > 1 { WindowCount(count: tile.windowIDs.count) }
+                    }
                     // Small enough that a pin badge stays clear of the bar's top edge.
                     .scaleEffect(hovering || targeted ? 1.1 : 1, anchor: .bottom)
                     .opacity(tile.app?.isHidden == true ? 0.55 : 1)
@@ -322,10 +336,17 @@ private struct TileView: View {
             }
         }
         .buttonStyle(.plain)
-        .help(tile.item.displayName)
+        // An app with windows here has its name over its preview instead.
+        .help(tile.app != nil && tile.hasWindowHere ? "" : tile.item.displayName)
         .accessibilityLabel(tile.item.displayName)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.12)) { hovering = inside }
+            if inside {
+                model.hoverBegan(tile, onDesktop: desktopID, frame: frame)
+            } else {
+                model.hoverEnded(tile)
+            }
         }
         .dropDestination(for: URL.self) { urls, _ in
             model.drop(urls, on: tile)
@@ -358,6 +379,17 @@ private struct TileView: View {
                     get: { model.isPinned(tile.item, in: space) },
                     set: { model.setPinned(tile.item, $0, in: space) }
                 ))
+            }
+        }
+        // For a strip tile: the app's windows share it, or each has its own.
+        if !tile.windowIDs.isEmpty && !tile.isMinimized {
+            Toggle("Group Windows", isOn: Binding(
+                get: { model.groupsWindows(of: tile.item) },
+                set: { model.setGroupsWindows(of: tile.item, $0) }
+            ))
+            // One window's tile; a group's windows float from its preview.
+            if tile.windowIDs.count == 1, let window = tile.windowID, let floating = model.isFloating(window: window) {
+                Button(floating ? "Tile Window" : "Float Window") { model.setFloating(window: window, !floating) }
             }
         }
         if let app = tile.app {
@@ -484,6 +516,24 @@ private struct BlankWindow: View {
         .clipShape(shape)
         .overlay(shape.strokeBorder(Color.primary.opacity(0.2), lineWidth: 0.5))
         .shadow(color: .black.opacity(0.35), radius: 1.5, y: 1)
+    }
+}
+
+/// How many of its app's windows a strip tile stands for, when it's more than one.
+private struct WindowCount: View {
+    let count: Int
+
+    var body: some View {
+        Text("\(count)")
+            .font(.system(size: 9, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 4)
+            .frame(minWidth: 14, minHeight: 14)
+            .background(Capsule().fill(.thickMaterial))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.2)))
+            .offset(x: 3, y: 2)
+            .accessibilityLabel("\(count) windows")
     }
 }
 

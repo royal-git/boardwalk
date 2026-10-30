@@ -107,9 +107,27 @@ final class WindowManager {
         }
     }
 
+    /// The window an app has focus on, or would when it's next in front.
+    func focusedWindow(of app: NSRunningApplication) -> Int? {
+        let element = AXUIElementCreateApplication(app.processIdentifier)
+        guard let window = value(of: element, kAXFocusedWindowAttribute) else { return nil }
+        var id: CGWindowID = 0
+        return _AXUIElementGetWindow(window as! AXUIElement, &id) == .success ? Int(id) : nil
+    }
+
+    /// The titles of an app's ordinary, unminimized windows, by window number.
+    func titles(of app: NSRunningApplication) -> [Int: String] {
+        standardWindows(of: app.processIdentifier).reduce(into: [:]) { titles, entry in
+            titles[Int(entry.key)] = value(of: entry.value, kAXTitleAttribute) as? String ?? ""
+        }
+    }
+
     /// An app's ordinary, unminimized windows by window number.
     private func standardWindows(of pid: pid_t) -> [CGWindowID: AXUIElement] {
         let app = AXUIElementCreateApplication(pid)
+        // Asked from the main thread, as the pointer comes to a tile: an app that's
+        // hung gives up after a second rather than Accessibility's usual six.
+        AXUIElementSetMessagingTimeout(app, 1)
         let windows = (value(of: app, kAXWindowsAttribute) as? [AXUIElement]) ?? []
         var result: [CGWindowID: AXUIElement] = [:]
         for window in windows {

@@ -83,6 +83,12 @@ final class DockPanelController {
         )
     }
 
+    /// Where a tile's preview goes, on screen: the middle of the tile, just above
+    /// the bar. `frame` is the tile's in the dock, as SwiftUI gives it.
+    func anchor(forTileAt frame: CGRect) -> CGPoint {
+        CGPoint(x: panel.frame.minX + frame.midX, y: barFrame.maxY + 6)
+    }
+
     func close() {
         cancellable = nil
         panel.orderOut(nil)

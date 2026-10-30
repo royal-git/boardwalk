@@ -4,6 +4,7 @@ import Foundation
 /// One desktop's windows as Paneru, the scrolling window manager, lays them out:
 /// a row of columns that can be wider than the screen, each column one window or
 /// several stacked top to bottom, with the screen showing a stretch of the row.
+/// Floating windows are left out of the row, where they are.
 public struct Strip: Hashable {
     public struct Window: Hashable {
         public var id: Int
@@ -30,9 +31,12 @@ public struct Strip: Hashable {
 
     /// Left to right.
     public var columns: [Column]
+    /// Windows floating over the strip rather than in it, in Paneru's order.
+    public var floating: [Window]
 
-    public init(columns: [Column]) {
+    public init(columns: [Column], floating: [Window] = []) {
         self.columns = columns
+        self.floating = floating
     }
 
     /// Groups windows, given in strip order, into columns. Paneru lists a stack's
@@ -59,6 +63,13 @@ public struct Strip: Hashable {
     /// Which column `windowID` is in, counting from the left.
     public func column(of windowID: Int) -> Int? {
         columns.firstIndex { $0.windows.contains { $0.id == windowID } }
+    }
+
+    /// Whether a window floats over the strip, or is in it; nil if it's neither,
+    /// like a window on another desktop.
+    public func isFloating(_ windowID: Int) -> Bool? {
+        if floating.contains(where: { $0.id == windowID }) { return true }
+        return column(of: windowID) != nil ? false : nil
     }
 
     /// The strip with the column holding `windowID` moved to place `index`
@@ -98,7 +109,7 @@ public enum PaneruState {
     /// Each desktop's strip, by macOS desktop id. `display` is the main display's
     /// bounds in the coordinates Paneru reports frames in (origin at the top left),
     /// for working out which columns are in view. Floating windows aren't part of
-    /// a strip and are left out.
+    /// the row of columns; they're listed apart.
     public static func strips(from json: Data, display: CGRect) throws -> [Int: Strip] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -114,7 +125,8 @@ public enum PaneruState {
             let tiled = row.windows.filter { !$0.floating }.map { info in
                 (window: Strip.Window(id: info.windowId, bundleID: info.bundleId), frame: info.frame?.rect)
             }
-            strips[desktop] = Strip(columns: Strip.columns(of: tiled, display: display))
+            let floating = row.windows.filter(\.floating).map { Strip.Window(id: $0.windowId, bundleID: $0.bundleId) }
+            strips[desktop] = Strip(columns: Strip.columns(of: tiled, display: display), floating: floating)
         }
         return strips
     }

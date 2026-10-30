@@ -28,7 +28,7 @@ You need macOS 13 or later (14 for sliding in step with the display), Xcode 15 o
 ## What it does
 
 - **A dock per desktop.** Each one has its own apps, folders, links, name, color and icon, and slides in with its desktop. Apps you open show on the dock of the desktop their windows are on.
-- **Sliding windows.** Windows open side by side. Three fingers slide the strip and a flick glides on; four fingers still switch desktops. Drag a window's tile along the dock to move it in the strip.
+- **Sliding windows.** Windows open side by side. Three fingers slide the strip and a flick glides on; four fingers still switch desktops. An app's windows share one tile, as in Apple's Dock (right-click › Group Windows to give each its own); rest the pointer on it to see them and pick one. Drag a single window's tile along the dock to move it in the strip, or float it over the strip from its right-click menu or the preview.
 - **Keyboard.** ⌃⌘ arrows move between windows; add ⇧ to carry one along. ⌃⌥ arrows place the front window in halves, thirds or quarters.
 - **The rest of a dock.** Minimized windows, badges, bouncing launches, drag and drop, and pinning to one desktop or all of them.
 
@@ -46,7 +46,7 @@ defaults delete com.apple.dock autohide-delay && killall Dock
 
 ## How it works
 
-Boardwalk draws its own dock in Swift. It runs [Paneru](https://github.com/karinushka/paneru), a Rust window manager, as a child process, so one Accessibility permission covers both. Desktops are tracked with the private SkyLight calls yabai uses, looked up at runtime: if a macOS update removes them, Boardwalk falls back to one dock for every desktop. It doesn't need Screen Recording.
+Boardwalk draws its own dock in Swift. It runs [Paneru](https://github.com/karinushka/paneru), a Rust window manager, as a child process, so one Accessibility permission covers both. Desktops are tracked with the private SkyLight calls yabai uses, looked up at runtime: if a macOS update removes them, Boardwalk falls back to one dock for every desktop. It needs Screen Recording only for pictures in the window previews, which stay off until you turn them on in the menu.
 
 | Path | What's there |
 | --- | --- |
