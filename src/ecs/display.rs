@@ -131,7 +131,8 @@ fn display_change_handler(
 
 /// Full reconciliation of the ECS display set against the OS truth.
 ///
-/// Runs after a brief quiet period following wake or a display notification.
+/// Runs after a brief quiet period following wake, a display notification or a
+/// change to the Dock.
 /// macOS may report an empty or incomplete display list during reconfiguration;
 /// applying that transient list would orphan every workspace. A successful
 /// scan refreshes both display ownership and the positions of its strips.
@@ -154,6 +155,10 @@ pub(crate) fn reconcile_displays(
                     | Event::DisplayMoved { .. }
                     | Event::DisplayResized { .. }
                     | Event::DisplayConfigured { .. }
+                    // The Dock showing, hiding or moving changes how much of
+                    // the display windows may use, without any display event.
+                    | Event::DockDidChangePref { .. }
+                    | Event::DockDidRestart { .. }
             )
     });
     if needs_reconcile {
