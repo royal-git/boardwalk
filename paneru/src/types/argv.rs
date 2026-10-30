@@ -100,7 +100,11 @@ fn parse_operation(argv: &[&str]) -> Result<Operation> {
             Some(arg) => ResizeDirection::parse(arg)?,
         }),
         "fullwidth" => Operation::FullWidth,
-        "manage" => Operation::Manage,
+        // `manage` alone is the focused window; `manage <window id>` is that one.
+        "manage" => match argv.get(1) {
+            Some(window) => Operation::ManageWindow(window.parse().map_err(|_| err())?),
+            None => Operation::Manage,
+        },
         "equalize" => Operation::Equalize,
         "balance" => Operation::Balance,
         "stack" => Operation::Stack(true),
@@ -216,6 +220,7 @@ impl Operation {
             Operation::Equalize => owned(&["equalize"]),
             Operation::Balance => owned(&["balance"]),
             Operation::Manage => owned(&["manage"]),
+            Operation::ManageWindow(window) => vec!["manage".to_string(), window.to_string()],
             Operation::Stack(true) => owned(&["stack"]),
             Operation::Stack(false) => owned(&["unstack"]),
             Operation::ToggleTabbedDisplay => owned(&["tabbeddisplay"]),
@@ -276,6 +281,7 @@ mod tests {
             Operation::Equalize,
             Operation::Balance,
             Operation::Manage,
+            Operation::ManageWindow(42),
             Operation::Stack(true),
             Operation::Stack(false),
             Operation::ToggleTabbedDisplay,

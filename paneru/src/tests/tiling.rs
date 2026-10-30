@@ -7,7 +7,7 @@ use crate::config::{
 use crate::ecs::SpawnWindowTrigger;
 use crate::ecs::layout::LayoutStrip;
 use crate::events::{DestroySource, Event};
-use crate::{assert_window_at, assert_window_size};
+use crate::{assert_focused, assert_window_at, assert_window_size};
 use bevy::math::IRect;
 use bevy::prelude::*;
 
@@ -578,6 +578,52 @@ fn test_floating_window_does_not_hold_a_slot_in_the_strip() {
                 "the tiled windows must close the gap the floating one left"
             );
             assert_eq!(window_x(world, 2), TEST_WINDOW_WIDTH);
+        })
+        .run(commands);
+}
+
+/// `ManageWindow` floats a window that isn't focused, leaving the focus where
+/// it is, and tiles it again.
+#[test]
+fn test_manage_window_floats_and_tiles_a_window_by_id() {
+    let commands = vec![
+        Event::Command {
+            command: Command::PrintState,
+        }, // 0
+        Event::Command {
+            command: Command::Window(Operation::ManageWindow(1)),
+        }, // 1 — float window 1, not the focused one
+        Event::Command {
+            command: Command::PrintState,
+        }, // 2
+        Event::Command {
+            command: Command::Window(Operation::ManageWindow(1)),
+        }, // 3 — and tile it again
+        Event::Command {
+            command: Command::PrintState,
+        }, // 4
+    ];
+
+    fn in_a_strip(world: &mut World, id: i32) -> bool {
+        let entity = find_window_entity(id, world);
+        let mut query = world.query::<&LayoutStrip>();
+        query.iter(world).any(|strip| strip.contains(entity))
+    }
+
+    TestHarness::new()
+        .with_windows(3)
+        .on_iteration(0, |world, _state| {
+            assert_focused!(world, 0);
+            assert!(in_a_strip(world, 1));
+        })
+        .on_iteration(2, |world, _state| {
+            assert_focused!(world, 0);
+            assert!(!in_a_strip(world, 1), "window 1 floats");
+            assert!(in_a_strip(world, 0) && in_a_strip(world, 2));
+        })
+        .on_iteration(4, |world, _state| {
+            assert_focused!(world, 0);
+            assert!(in_a_strip(world, 1), "window 1 is tiled again");
         })
         .run(commands);
 }

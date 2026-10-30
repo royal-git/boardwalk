@@ -1127,7 +1127,8 @@ fn full_width_window(
     }
 }
 
-/// Toggles the managed state of the focused window.
+/// Toggles the managed state of the focused window, or with `ManageWindow`, of
+/// a window given by id.
 /// If the window is currently unmanaged, it becomes managed. If managed, it becomes unmanaged (floating).
 ///
 /// # Arguments
@@ -1141,17 +1142,21 @@ fn manage_window(
     mut workspaces: Query<(&mut LayoutStrip, Has<ActiveWorkspaceMarker>)>,
     mut commands: Commands,
 ) {
-    if filter_window_operations(&mut messages, |op| matches!(op, Operation::Manage))
-        .next()
-        .is_none()
-    {
+    let Some(operation) = filter_window_operations(&mut messages, |op| {
+        matches!(op, Operation::Manage | Operation::ManageWindow(_))
+    })
+    .next() else {
         return;
-    }
+    };
 
-    let Some((window, entity, unmanaged)) = windows
-        .focused()
-        .and_then(|(_, entity)| windows.get_managed(entity))
+    let target = match operation {
+        Operation::ManageWindow(window_id) => windows.find(*window_id),
+        _ => windows.focused(),
+    };
+    let Some((window, entity, unmanaged)) =
+        target.and_then(|(_, entity)| windows.get_managed(entity))
     else {
+        debug!("manage: no window for {operation:?}");
         return;
     };
     debug!(

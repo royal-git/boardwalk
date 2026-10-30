@@ -244,6 +244,9 @@ pub enum Operation {
     Balance,
     /// Toggles the managed state of the focused window.
     Manage,
+    /// Toggles the managed state of a window by id, focused or not: for
+    /// floating a window from elsewhere, like a dock showing the strip.
+    ManageWindow(i32),
     /// Stacks or unstacks a window. The boolean indicates whether to stack (`true`) or unstack (`false`).
     Stack(bool),
     /// Toggles the focused window's stack between a normal split display
