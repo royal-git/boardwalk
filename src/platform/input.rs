@@ -58,6 +58,8 @@ struct Touch {
     /// Whether the finger landed this event, which suppresses delta tracking
     /// until every finger is down.
     began: bool,
+    /// Whether the finger left the trackpad this event.
+    ended: bool,
 }
 
 impl Touch {
@@ -73,6 +75,10 @@ impl Touch {
                     y: position.y,
                     device_width_points: touch.deviceSize().width,
                     began: touch.phase() == NSTouchPhase::Began,
+                    ended: matches!(
+                        touch.phase(),
+                        NSTouchPhase::Ended | NSTouchPhase::Cancelled
+                    ),
                 }
             })
             .collect()
@@ -220,6 +226,10 @@ pub(super) struct InputHandler {
     last_swipe_time: Option<Instant>,
     last_window_scroll: Option<(Instant, Direction)>,
     invalid_device_size_warned: bool,
+    /// The swipe's fingers have started leaving the trackpad and the strip was
+    /// released (see `fingers_lifting`): the rest of the gesture, its late end
+    /// included, is ignored until a finger lands again.
+    lifting: bool,
     // Prevents from being Unpin automatically
     _pin: PhantomPinned,
 }
@@ -248,6 +258,7 @@ impl InputHandler {
             last_swipe_time: None,
             last_window_scroll: None,
             invalid_device_size_warned: false,
+            lifting: false,
             _pin: PhantomPinned,
         }
     }
@@ -592,13 +603,18 @@ impl InputHandler {
             if phase.0 & NS_EVENT_PHASE_CANCELLED != 0 || phase.0 & NS_EVENT_PHASE_ENDED != 0 {
                 self.swipe_accumulator.reset();
                 self.invalid_device_size_warned = false;
-                if let Some(events) = &self.events {
+                if !std::mem::take(&mut self.lifting)
+                    && let Some(events) = &self.events
+                {
                     _ = events.send(Event::TouchpadUp);
                 }
                 return false;
             }
 
             let fingers = Touch::sample(&ns_event.allTouches());
+            if self.release_on_lift(&fingers, configured_fingers) {
+                return gesture_should_intercept(Some(configured_fingers), fingers.len());
+            }
             if !gesture_should_intercept(Some(configured_fingers), fingers.len()) {
                 // AppKit interleaves phase events with an empty touch set
                 // between usable samples. They do not mean the fingers lifted.
@@ -664,6 +680,33 @@ impl InputHandler {
         })
     }
 
+    /// Releases the strip as soon as a swipe's fingers start leaving the
+    /// trackpad (see `fingers_lifting`). Returns whether the event belongs to a
+    /// released gesture, whose remaining events are ignored.
+    fn release_on_lift(&mut self, fingers: &[Touch], configured_fingers: usize) -> bool {
+        if fingers.iter().any(|finger| finger.began) {
+            self.lifting = false;
+        }
+        if self.lifting {
+            return true;
+        }
+        let ended = fingers.iter().filter(|finger| finger.ended).count();
+        if !fingers_lifting(
+            configured_fingers,
+            self.swipe_accumulator.anchors.len(),
+            fingers.len() - ended,
+            ended,
+        ) {
+            return false;
+        }
+        self.swipe_accumulator.reset();
+        self.lifting = true;
+        if let Some(events) = &self.events {
+            _ = events.send(Event::TouchpadUp);
+        }
+        true
+    }
+
     /// Handles key press events. It determines the modifier mask and attempts to find a matching keybinding in the configuration.
     /// If a binding is found, it sends a `Command` event and intercepts the key press.
     ///
@@ -724,6 +767,15 @@ fn gesture_should_intercept(configured_fingers: Option<usize>, actual_fingers: u
 
 fn should_reset_swipe_anchors(actual_fingers: usize, anchored_fingers: usize) -> bool {
     actual_fingers != 0 && actual_fingers != anchored_fingers
+}
+
+/// Whether a gesture event shows a swipe's fingers leaving the trackpad: one of
+/// them ending, or fewer of them still touching. `AppKit` ends the gesture as a
+/// whole only once every finger has lingered and gone, tens of milliseconds
+/// later, and with no finger movement in between the strip would brake in the
+/// meantime and then lurch into its coast.
+fn fingers_lifting(configured: usize, anchored: usize, touching: usize, ended: usize) -> bool {
+    anchored == configured && (ended > 0 || (touching != 0 && touching < configured))
 }
 
 // Remote mouse tools can send group flags without left or right flags.
@@ -1237,6 +1289,22 @@ mod tests {
         assert_horizontal(swipe.sample(three_fingers(0.0006), |a, b| a == b), -0.0018);
         assert!(!should_reset_swipe_anchors(0, swipe.anchors.len()));
         assert_horizontal(swipe.sample(three_fingers(0.0012), |a, b| a == b), -0.0018);
+    }
+
+    #[test]
+    fn a_swipe_ends_as_soon_as_its_fingers_start_lifting() {
+        // Mid-swipe, one finger ending or one fewer touching is the lift.
+        assert!(fingers_lifting(3, 3, 2, 1));
+        assert!(fingers_lifting(3, 3, 0, 3));
+        assert!(fingers_lifting(3, 3, 2, 0));
+        // Still swiping, or AppKit's empty in-between events.
+        assert!(!fingers_lifting(3, 3, 3, 0));
+        assert!(!fingers_lifting(3, 3, 0, 0));
+        // A fourth finger joining (a desktop switch) isn't a lift.
+        assert!(!fingers_lifting(3, 3, 4, 0));
+        // Without a swipe under way there's nothing to release.
+        assert!(!fingers_lifting(3, 0, 2, 1));
+        assert!(!fingers_lifting(3, 2, 1, 0));
     }
 
     #[test]
