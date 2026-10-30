@@ -103,6 +103,7 @@ final class AppModel: ObservableObject {
         return panel?.barFrame
     }
     private var shortcuts: ArrangeShortcuts?
+    private let paneruDaemon = PaneruDaemon()
     private lazy var paneru = Paneru { [weak self] strips in
         guard let self else { return }
         self.strips = strips
@@ -152,12 +153,14 @@ final class AppModel: ObservableObject {
             center: { [weak self] in self?.centerWindow() },
             tileAll: { [weak self] in self?.tileAll() }
         )
+        paneruDaemon.start()
         paneru.start()
     }
 
     /// Called on quit: give the user their own Dock back.
     func stop() {
         paneru.stop()
+        paneruDaemon.stop()
         systemDock.restore()
     }
 

@@ -2,13 +2,21 @@ import BoardwalkCore
 import CoreGraphics
 import Foundation
 
-/// Follows Paneru, the scrolling window manager, when it's installed and running:
+/// Follows Paneru, the scrolling window manager, when it's running (see
+/// `PaneruDaemon`, which runs the one that comes with the app):
 /// each desktop's strip of windows, for the dock to show in the same order, and
 /// moves windows along it when they're dragged in the dock. Talks to Paneru
 /// through its command line tool. Without it, nothing here does anything
 /// and the dock keeps its usual order. Used from the main thread only.
 final class Paneru {
-    /// Where Homebrew (Apple silicon, then Intel), Cargo and Nix install the tool.
+    /// The Paneru inside the app, next to its own executable; nil when run
+    /// without a bundle (`swift run`).
+    static var bundledExecutable: URL? {
+        Bundle.main.url(forAuxiliaryExecutable: "paneru")
+    }
+
+    /// Where Homebrew (Apple silicon, then Intel), Cargo and Nix install the
+    /// tool, for when the app doesn't bring its own.
     private static let candidates = [
         "/opt/homebrew/bin/paneru",
         "/usr/local/bin/paneru",
@@ -101,7 +109,7 @@ final class Paneru {
     // MARK: Private
 
     private static var executable: URL? {
-        candidates.lazy
+        bundledExecutable ?? candidates.lazy
             .map { ($0 as NSString).expandingTildeInPath }
             .first { FileManager.default.isExecutableFile(atPath: $0) }
             .map { URL(fileURLWithPath: $0) }
@@ -195,7 +203,7 @@ final class Paneru {
 
     /// Runs the tool and returns what it printed, or nil if it failed. Gives up
     /// after two seconds, so a stuck Paneru can't hold up the dock.
-    private static func run(_ arguments: [String]) -> Data? {
+    static func run(_ arguments: [String]) -> Data? {
         guard let executable else { return nil }
         let process = Process()
         process.executableURL = executable
