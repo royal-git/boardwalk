@@ -1,9 +1,12 @@
+import ApplicationServices
 import Foundation
 
 /// Runs the window manager: the Paneru that comes inside the app, unless another
 /// Paneru (Homebrew's service, say) is already running, which then keeps the
 /// windows. Paneru runs as the app's own child, so macOS asks for one
-/// Accessibility permission, the app's, for both. If it stops, it's started
+/// Accessibility permission, the app's, for both: the app asks for it under its
+/// own name and starts Paneru once it has it, and tells Paneru it's bundled
+/// (`PANERU_EMBEDDED`), so Paneru shows no prompt or menu bar item of its own. If it stops, it's started
 /// again, after a wait that grows while it keeps stopping soon after starting.
 /// Its output goes to `~/Library/Logs/Boardwalk/paneru.log`. Paneru without a
 /// configuration of its own leaves no room for the dock and ignores swipes, so
@@ -16,6 +19,9 @@ final class PaneruDaemon {
     private var startedAt = Date.distantPast
     private var retryDelay: TimeInterval = 1
     private var pendingLaunch: DispatchWorkItem?
+    /// Whether macOS has been asked for the permission yet: once per run, then
+    /// the app waits for it to be granted in System Settings.
+    private var askedForPermission = false
     /// How often to look again while another Paneru keeps the windows.
     private static let checkInterval: TimeInterval = 10
     /// Runs this long and it's taken to have started fine, so a later stop is
@@ -44,6 +50,10 @@ final class PaneruDaemon {
 
     private func launch() {
         guard running, process == nil, let executable else { return }
+        guard isTrusted() else {
+            launchLater(after: 2)
+            return
+        }
         DispatchQueue.global().async { [weak self] in
             // Asking it for its state is how to tell whether one is running.
             let answers = Paneru.run(["query", "state", "--json"]) != nil
@@ -63,6 +73,7 @@ final class PaneruDaemon {
         let process = Process()
         process.executableURL = executable
         process.arguments = ["launch"]
+        process.environment = ProcessInfo.processInfo.environment.merging(["PANERU_EMBEDDED": "1"]) { $1 }
         if let log = Self.log() {
             process.standardOutput = log
             process.standardError = log
@@ -89,6 +100,16 @@ final class PaneruDaemon {
             retryDelay = min(retryDelay * 2, 60)
         }
         launchLater(after: retryDelay)
+    }
+
+    /// Asks for the permission the first time (macOS shows its own prompt, with
+    /// the app's name).
+    private func isTrusted() -> Bool {
+        if AXIsProcessTrusted() { return true }
+        guard !askedForPermission else { return false }
+        askedForPermission = true
+        let prompt = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        return AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
     }
 
     private func launchLater(after delay: TimeInterval) {

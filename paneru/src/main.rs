@@ -218,8 +218,16 @@ fn main() -> Result<()> {
             })
             .expect("setting Ctrl-C handler should succeed");
             CommandReader::new(sender.clone()).start()?;
-            if !check_ax_privilege() && !wait_for_accessibility(sender.clone(), &receiver) {
-                return Ok(());
+            if !check_ax_privilege() {
+                // An app that bundles Paneru asks for the permission under its
+                // own name, and starts Paneru again once it has it.
+                if is_embedded() {
+                    warn!("Accessibility permission is required; the app that started Paneru asks for it.");
+                    return Ok(());
+                }
+                if !wait_for_accessibility(sender.clone(), &receiver) {
+                    return Ok(());
+                }
             }
             match objc2::rc::autoreleasepool(|_| setup_bevy_app(sender, receiver)) {
                 Ok(mut app) => {
@@ -248,6 +256,13 @@ fn main() -> Result<()> {
         SubCmd::State { state } => client::run(ClientCommand::ScriptState(state.request()?))?,
     }
     Ok(())
+}
+
+/// Whether an app that bundles Paneru started it (`PANERU_EMBEDDED=1`). The app
+/// then has its own menu bar item and asks for permissions under its own name,
+/// so Paneru shows neither its menu bar item nor its own permission prompt.
+pub(crate) fn is_embedded() -> bool {
+    std::env::var_os("PANERU_EMBEDDED").is_some_and(|value| value == "1")
 }
 
 fn wait_for_accessibility(sender: EventSender, receiver: &Receiver<Event>) -> bool {

@@ -48,8 +48,10 @@ pub struct MenuBarVisibility {
 }
 
 impl MenuBarVisibility {
+    /// Never inside an app that bundles Paneru (see `is_embedded`), which has
+    /// a menu bar item of its own.
     pub fn enabled(&self, config: &Config) -> bool {
-        self.enabled.unwrap_or_else(|| config.menubar_enabled())
+        !crate::is_embedded() && self.enabled.unwrap_or_else(|| config.menubar_enabled())
     }
 
     fn load(path: &Path) -> Self {
