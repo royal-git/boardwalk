@@ -42,6 +42,7 @@ use crate::platform::{Modifiers, PlatformCallbacks, WinID, WorkspaceId};
 
 pub mod display;
 pub mod focus;
+pub(crate) mod frame_step;
 pub mod layout;
 #[cfg(feature = "lua")]
 pub mod layout_ops;
@@ -225,11 +226,13 @@ pub fn register_systems(app: &mut bevy::app::App) {
     // Registered with `add_message`, not `init_resource`, so the buffer is
     // double-buffered and dropped after a frame like any other message stream.
     app.add_message::<InputEvent>();
+    app.init_resource::<frame_step::FrameStep>();
     app.add_systems(
         PreUpdate,
         (
             systems::pump_events.in_set(PreUpdateSet::Pump),
             systems::demux_input_events.in_set(PreUpdateSet::Demux),
+            frame_step::advance_frame_step.in_set(PreUpdateSet::Demux),
             // Read creation notifications in the same frame that pumps them.
             // Otherwise an idle pump can wait up to its next timeout before
             // the first resize of a newly visible window.
@@ -332,6 +335,11 @@ pub fn register_systems(app: &mut bevy::app::App) {
             ),
         )
             .in_set(PostUpdateSet::Ui),
+    );
+    // Once this tick's animations are known to be running or done.
+    app.add_systems(
+        PostUpdate,
+        frame_step::run_frame_clock.in_set(PostUpdateSet::Bookkeeping),
     );
 }
 
@@ -441,14 +449,59 @@ pub struct ManualStripOffset {
     pub signature: Vec<(Entity, i32)>,
 }
 
+/// How a scrolled strip moves; see [`Scrolling`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StripMotion {
+    /// Toward `target`, closely: behind the fingers, or catching up with where
+    /// they stopped.
+    Follow,
+    /// On its own speed after a flick, until friction stops it.
+    Coast,
+    /// Easing into a column it snapped to (`auto_center`).
+    Snap,
+}
+
+/// A strip being scrolled by hand, and coasting after. While the fingers are
+/// down the strip follows `target`, which they move; after a flick it coasts
+/// on its own speed until friction stops it. See `scroll::step_strip`.
 #[derive(Component, Debug)]
 pub struct Scrolling {
+    /// How fast the strip is moving, in points per second.
     pub velocity: f64,
+    /// Where the strip is, in points, before rounding to whole ones.
     pub position: f64,
+    /// Where it's headed, in points, unless it's coasting.
+    pub target: f64,
     /// When true, the user's fingers are on the trackpad.
     pub is_user_swiping: bool,
+    /// How it moves: following `target`, or coasting.
+    pub motion: StripMotion,
     /// Last time a physical swipe event was received.
     pub last_event: Duration,
+    /// Released by the fingers and yet to be snapped to a column, for
+    /// `auto_center`.
+    pub snap_pending: bool,
+}
+
+impl Scrolling {
+    /// A strip at rest at `position`.
+    pub fn at(position: f64, last_event: Duration) -> Self {
+        Self {
+            velocity: 0.0,
+            position,
+            target: position,
+            is_user_swiping: false,
+            motion: StripMotion::Follow,
+            last_event,
+            snap_pending: false,
+        }
+    }
+
+    /// Settled on its target: the spring sets both exactly once it's close.
+    #[allow(clippy::float_cmp, reason = "the spring snaps to exactly these values")]
+    pub fn is_at_rest(&self) -> bool {
+        self.position == self.target && self.velocity == 0.0
+    }
 }
 
 #[derive(Component, Clone, Debug, Default, Deref, DerefMut)]
@@ -1157,12 +1210,9 @@ mod tests {
         assert!(!overlay_runs_after(&mut harness, &|_| {}), "idle frame");
         assert!(
             overlay_runs_after(&mut harness, &|world| {
-                world.entity_mut(strip_entity).insert(super::Scrolling {
-                    velocity: 0.0,
-                    position: 0.0,
-                    is_user_swiping: false,
-                    last_event: Duration::from_secs(1),
-                });
+                world
+                    .entity_mut(strip_entity)
+                    .insert(super::Scrolling::at(0.0, Duration::from_secs(1)));
             }),
             "overlay must rerun to hide when Scrolling starts"
         );

@@ -15,11 +15,12 @@ use tracing::{Level, instrument};
 use crate::commands::{Command, Direction, Operation};
 use crate::config::Config;
 use crate::config::swipe::{SwipeGestureDirection, focus_direction};
+use crate::ecs::frame_step::{FrameStep, MAX_FRAME_STEP_SECS};
 use crate::ecs::layout::{Column, LayoutStrip};
 use crate::ecs::params::{ActiveDisplay, Windows};
 use crate::ecs::{
     ActiveWorkspaceMarker, ManualStripOffset, MissionControlActive, Position, PreUpdateSet,
-    Scrolling, SendMessageTrigger, UpdateSet,
+    Scrolling, SendMessageTrigger, StripMotion, UpdateSet,
 };
 use crate::errors::Result;
 use bevy::ecs::schedule::common_conditions::on_message;
@@ -124,6 +125,73 @@ fn paging_active(config: Res<Config>, state: Res<PageGestureState>) -> bool {
 }
 
 #[cfg(test)]
+mod strip_motion_tests {
+    use super::{Scrolling, StripMotion, coast, coast_distance, follow};
+    use std::time::Duration;
+
+    fn flick(speed: f64) -> Scrolling {
+        let mut scroll = Scrolling::at(0.0, Duration::ZERO);
+        scroll.velocity = speed;
+        scroll.motion = StripMotion::Coast;
+        scroll
+    }
+
+    /// Coasts to a stop at `fps`, returning where it stopped and every position on the way.
+    fn coast_out(speed: f64, fps: f64) -> (f64, Vec<f64>) {
+        let mut scroll = flick(speed);
+        let mut path = vec![];
+        while scroll.motion == StripMotion::Coast {
+            coast(&mut scroll, 1.0 / fps, 4.0);
+            path.push(scroll.position);
+        }
+        (scroll.position, path)
+    }
+
+    #[test]
+    fn a_flick_stops_where_its_speed_says_whatever_the_frame_rate() {
+        for speed in [-3000.0, 400.0, 1500.0, 3000.0] {
+            let expected = coast_distance(speed, 4.0);
+            for fps in [30.0, 60.0, 120.0] {
+                let (stopped, _) = coast_out(speed, fps);
+                assert!(
+                    (stopped - expected).abs() < 1e-6,
+                    "{speed} at {fps} fps: {stopped} vs {expected}"
+                );
+            }
+        }
+        // About where the old cut-off at 5 points a frame stopped it.
+        assert!((coast_distance(3000.0, 4.0) - 448.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_coasting_strip_only_slows_down() {
+        let (_, path) = coast_out(2000.0, 120.0);
+        let steps: Vec<f64> = path.windows(2).map(|pair| pair[1] - pair[0]).collect();
+        assert!(steps.iter().all(|step| *step >= 0.0));
+        assert!(steps.windows(2).all(|pair| pair[1] <= pair[0] + 1e-9));
+        assert!(
+            path.len() < 60,
+            "stops within half a second, took {} frames",
+            path.len()
+        );
+    }
+
+    #[test]
+    fn the_strip_keeps_up_with_the_fingers_without_overshooting() {
+        let mut scroll = Scrolling::at(0.0, Duration::ZERO);
+        scroll.is_user_swiping = true;
+        scroll.target = 100.0;
+        let mut frames = 0;
+        while !scroll.is_at_rest() {
+            follow(&mut scroll, 1.0 / 120.0);
+            assert!(scroll.position <= 100.0);
+            frames += 1;
+        }
+        assert!(frames <= 8, "took {frames} frames to catch up");
+    }
+}
+
+#[cfg(test)]
 mod release_velocity_tests {
     use super::*;
 
@@ -198,16 +266,34 @@ mod paging_tests {
     }
 }
 
-/// Upper bound on the timestep used to *advance* the strip.
-///
-/// `Time::<Virtual>` is deliberately given a 10s `max_delta` (see [`crate::ecs`])
-/// so `elapsed()` keeps tracking wall-clock across a stalled frame — the
-/// finger-lift timeout below depends on that. It is the wrong bound for
-/// integration: a frame delayed by a blocking AX round trip would otherwise
-/// advance the strip by `velocity * dt * viewport_width` in one step and slam
-/// it into the far clamp bound. Integrate at most one 30fps frame per update,
-/// however long the frame actually took.
-const MAX_STEP_SECS: f64 = 1.0 / 30.0;
+/// How tightly the strip follows the fingers: a critically damped spring this
+/// stiff trails them by about 10 ms, which is all it takes to even out
+/// trackpad samples landing unevenly between display frames (sometimes two in
+/// one frame, then none in the next) without the strip feeling any looser.
+/// Softer (20 ms) halves the strip's own judder but felt juddery in use, and
+/// made no difference to how regularly windows moved on screen.
+const FOLLOW_STIFFNESS: f64 = 40_000.0;
+
+/// How the strip eases into a column it snaps to (`auto_center`), and catches
+/// up with fingers that rested before lifting.
+const SETTLE_STIFFNESS: f64 = 300.0;
+
+/// Friction a coasting strip feels besides the configured deceleration, in
+/// points per second squared. Deceleration alone slows the strip in
+/// proportion to its speed, so it would creep on for over a second; this
+/// brings it to a gentle stop about where the old cut-off at 5 points a frame
+/// used to stop it dead.
+const STOPPING_FRICTION: f64 = 3000.0;
+
+/// Largest integration step: a spring as stiff as [`FOLLOW_STIFFNESS`] goes
+/// unstable with bigger ones, so a frame is stepped in several.
+const MAX_SPRING_SUBSTEP_SECS: f64 = 1.0 / 1000.0;
+
+/// Close enough to the target to stop there. Windows move in whole points, so
+/// the last point of an ease-out would otherwise creep in over several
+/// frames, which looks like a stutter.
+const SETTLED_DISTANCE: f64 = 1.0;
+const SETTLED_SPEED: f64 = 20.0;
 
 /// How far back a release looks to measure how fast the fingers were moving.
 ///
@@ -291,8 +377,8 @@ impl Plugin for ScrollEventsPlugin {
         );
 
         // Only the two gesture systems are gated on an input event. The rest of
-        // the chain (inertia, snap force, integrator) must keep running after
-        // the fingers stop sending events, since that's when they take over.
+        // the chain (snap, spring) must keep running after the fingers stop
+        // sending events, since that's when the strip coasts.
         app.add_systems(
             Update,
             (
@@ -303,9 +389,8 @@ impl Plugin for ScrollEventsPlugin {
                     swipe_gesture
                         .run_if(mission_control_inactive)
                         .run_if(on_message::<InputEvent>),
-                    apply_inertia,
-                    apply_snap_force,
-                    scrolling_integrator,
+                    snap_released_swipe,
+                    step_strip,
                     apply_scrolling_constraints,
                     swiping_timeout,
                 )
@@ -464,35 +549,37 @@ fn swipe_gesture(
         entity_commands.try_remove::<ManualStripOffset>();
     }
 
+    let viewport_width = f64::from(active_display.bounds().width());
+    let direction_modifier = match config.swipe_gesture_direction() {
+        SwipeGestureDirection::Natural => -1.0,
+        SwipeGestureDirection::Reversed => 1.0,
+    };
+
+    // Fingers landing catch the strip where it is.
     if touchpad_down && let Some(scrolling) = scrolling.as_mut() {
         scrolling.velocity = 0.0;
+        scrolling.target = scrolling.position;
         scrolling.is_user_swiping = true;
+        scrolling.motion = StripMotion::Follow;
+        scrolling.snap_pending = false;
         scrolling.last_event = now;
     }
 
-    // While the fingers are down the strip follows them exactly, and nothing
-    // else moves it: `scrolling_integrator` leaves it alone until release.
+    // While the fingers are down they move the target, and the strip follows
+    // it closely (see `step_strip_spring`).
     if has_scroll_event {
-        let viewport_width = f64::from(active_display.bounds().width());
-        let direction_modifier = match config.swipe_gesture_direction() {
-            SwipeGestureDirection::Natural => -1.0,
-            SwipeGestureDirection::Reversed => 1.0,
-        };
-
+        let travel = total_delta * viewport_width * direction_modifier * swipe_sensitivity;
         if let Some(scrolling) = scrolling.as_mut() {
-            scrolling.velocity = 0.0;
             scrolling.is_user_swiping = true;
+            scrolling.motion = StripMotion::Follow;
+            scrolling.snap_pending = false;
             scrolling.last_event = now;
-            scrolling.position +=
-                total_delta * viewport_width * direction_modifier * swipe_sensitivity;
+            scrolling.target += travel;
         } else if let Ok(mut entity_commands) = commands.get_entity(*entity) {
-            entity_commands.try_insert(Scrolling {
-                velocity: 0.0,
-                position: f64::from(position.0.x)
-                    + total_delta * viewport_width * direction_modifier * swipe_sensitivity,
-                is_user_swiping: true,
-                last_event: now,
-            });
+            let mut scrolling = Scrolling::at(f64::from(position.0.x), now);
+            scrolling.is_user_swiping = true;
+            scrolling.target += travel;
+            entity_commands.try_insert(scrolling);
         }
     }
 
@@ -501,15 +588,11 @@ fn swipe_gesture(
     // multi-finger swipe leaves samples to coast on.
     if touchpad_up {
         if let Some(scrolling) = scrolling.as_mut() {
-            scrolling.velocity = samples.velocity(now) * swipe_sensitivity;
+            scrolling.velocity =
+                samples.velocity(now) * swipe_sensitivity * viewport_width * direction_modifier;
             scrolling.is_user_swiping = false;
-            // Lifted without moving: the strip is free straight away, rather
-            // than held where the fingers left it until `swiping_timeout`.
-            if scrolling.velocity.abs() < f64::EPSILON
-                && let Ok(mut entity_commands) = commands.get_entity(*entity)
-            {
-                entity_commands.try_remove::<Scrolling>();
-            }
+            scrolling.motion = StripMotion::Coast;
+            scrolling.snap_pending = true;
         }
         samples.clear();
     }
@@ -518,29 +601,23 @@ fn swipe_gesture(
 #[instrument(level = Level::TRACE, skip_all)]
 pub(super) fn swiping_timeout(
     strips: Populated<(Entity, &mut Scrolling), With<LayoutStrip>>,
-    active_display: ActiveDisplay,
     time: Res<Time>,
     window_manager: Res<WindowManager>,
     mut commands: Commands,
 ) {
     const FINGER_LIFT_THRESHOLD: Duration = Duration::from_millis(50);
-    const MIN_VELOCITY_PX: f64 = 5.0;
-    // Predicts the distance the integrator is about to move, so it has to use
-    // the same bounded step the integrator does.
-    let dt = time.delta_secs_f64().min(MAX_STEP_SECS);
-    let viewport_width = f64::from(active_display.bounds().width());
 
     for (entity, mut scroll) in strips {
         if time.elapsed().abs_diff(scroll.last_event) > FINGER_LIFT_THRESHOLD {
             // Resting fingers, a finished modifier-scroll, or a release that
-            // never arrived: nothing to coast on. A real release has already
-            // cleared `is_user_swiping` and set the speed to coast at.
+            // never arrived: nothing to coast on, so the strip settles where
+            // the fingers left it. A real release has already cleared
+            // `is_user_swiping` and sent the strip where it coasts to.
             if scroll.is_user_swiping {
                 scroll.is_user_swiping = false;
-                scroll.velocity = 0.0;
             }
 
-            if scroll.velocity.abs() * dt * viewport_width < MIN_VELOCITY_PX
+            if scroll.is_at_rest()
                 && let Ok(mut entity_commands) = commands.get_entity(entity)
             {
                 entity_commands.try_remove::<Scrolling>();
@@ -555,102 +632,134 @@ pub(super) fn swiping_timeout(
     }
 }
 
+/// With `auto_center`, a released swipe comes to rest centred on the column
+/// nearest to where it would coast to, if one is near enough.
 #[instrument(level = Level::TRACE, skip_all)]
-fn apply_inertia(
-    mut strips: Populated<(Entity, &mut Scrolling), With<LayoutStrip>>,
-    time: Res<Time>,
-    config: Res<Config>,
-) {
-    let dt = time.delta_secs_f64();
-    for (_, mut scroll) in &mut strips {
-        if scroll.is_user_swiping {
-            continue;
-        }
-
-        if scroll.velocity.abs() > 0.001 {
-            // Unbounded on purpose: decay is monotonic toward zero, so a long
-            // frame can only shed more momentum, never overshoot. After a stall
-            // that is what we want.
-            let decay_rate = config.swipe_deceleration();
-            scroll.velocity *= (-decay_rate * dt).exp();
-        } else {
-            scroll.velocity = 0.0;
-        }
-    }
-}
-
-#[instrument(level = Level::TRACE, skip_all)]
-fn apply_snap_force(
-    mut strip: Single<(&LayoutStrip, &Position, &mut Scrolling)>,
+fn snap_released_swipe(
+    mut strip: Single<(&LayoutStrip, &mut Scrolling)>,
     active_display: ActiveDisplay,
     windows: Windows,
     config: Res<Config>,
-    time: Res<Time>,
 ) {
-    const CENTER_MAGNETIC_FORCE: f64 = 10.0;
     const SNAP_DISPLAY_RATIO: f64 = 0.45;
 
+    let (strip, ref mut scroll) = *strip;
+    if !scroll.snap_pending {
+        return;
+    }
+    scroll.snap_pending = false;
     if !config.auto_center() {
         return;
     }
 
     let viewport = active_display.actual_bounds(&config);
-    let viewport_center = viewport.center().x;
+    let viewport_center = f64::from(viewport.center().x);
     let snap_threshold = SNAP_DISPLAY_RATIO * f64::from(viewport.width());
-
-    let (strip, position, ref mut scroll) = *strip;
-    if scroll.is_user_swiping || scroll.velocity.abs() > 0.5 {
-        return;
-    }
-
-    let target_offset = strip
+    let coasting_to = if scroll.motion == StripMotion::Coast {
+        scroll.position + coast_distance(scroll.velocity, config.swipe_deceleration())
+    } else {
+        scroll.target
+    };
+    let centred = strip
         .all_columns()
         .into_iter()
         .filter_map(|entity| {
-            windows
-                .layout_position(entity)
-                .map(|p| p.0.x)
-                .zip(Some(entity))
+            let position = windows.layout_position(entity)?.0.x;
+            let width = windows
+                .moving_frame(entity)
+                .map_or(0, |frame| frame.width());
+            Some(viewport_center - f64::from(position) - f64::from(width) / 2.0)
         })
-        .map(|(position, entity)| {
-            let col_width = windows.moving_frame(entity).map_or(0, |f| f.width());
-            viewport_center - (position + col_width / 2)
-        })
-        .min_by_key(|target| (position.x - target).abs())
-        .unwrap_or(position.x);
-
-    let dist_to_snap = f64::from(position.x - target_offset);
-    if dist_to_snap.abs() < snap_threshold {
-        // This is an exponential approach, and it only pulls *toward* the
-        // target while the factor stays under 1. Past that it overshoots to the
-        // far side; at a 10s delta it would fling the strip 100x the distance
-        // the wrong way. Clamping the factor rather than `dt` keeps that true
-        // for any timestep and any `CENTER_MAGNETIC_FORCE`.
-        let approach = (time.delta_secs_f64() * CENTER_MAGNETIC_FORCE).min(1.0);
-        scroll.position -= dist_to_snap * approach;
+        .min_by(|a, b| (coasting_to - a).abs().total_cmp(&(coasting_to - b).abs()));
+    if let Some(centred) = centred
+        && (coasting_to - centred).abs() < snap_threshold
+    {
+        scroll.target = centred;
+        scroll.motion = StripMotion::Snap;
     }
 }
 
+/// How far a strip coasting at `velocity` goes before it stops, slowing by
+/// `deceleration` and [`STOPPING_FRICTION`] (`dv/dt = -kv - a`).
+fn coast_distance(velocity: f64, deceleration: f64) -> f64 {
+    let (speed, k, a) = (velocity.abs(), deceleration, STOPPING_FRICTION);
+    velocity.signum() * (speed - a / k * (1.0 + k * speed / a).ln()) / k
+}
+
+/// Moves the strip once per display frame (see `frame_step`): after a flick
+/// it coasts until friction stops it, and otherwise it follows its target.
 #[instrument(level = Level::TRACE, skip_all)]
-fn scrolling_integrator(
-    mut strip: Single<&mut Scrolling, With<LayoutStrip>>,
-    time: Res<Time>,
-    active_display: ActiveDisplay,
+fn step_strip(
+    mut strips: Populated<&mut Scrolling, With<LayoutStrip>>,
+    frame_step: Res<FrameStep>,
     config: Res<Config>,
 ) {
-    let dt = time.delta_secs_f64().min(MAX_STEP_SECS);
-    let viewport = active_display.actual_bounds(&config);
-    let viewport_width = f64::from(viewport.width());
-
-    // Direction modifier: Natural moves strip left (negative offset) for positive delta (finger left)
-    let direction_modifier = match config.swipe_gesture_direction() {
-        SwipeGestureDirection::Natural => -1.0,
-        SwipeGestureDirection::Reversed => 1.0,
+    let Some(dt) = frame_step.dt() else {
+        return;
     };
+    let dt = dt.min(MAX_FRAME_STEP_SECS);
+    for mut scroll in &mut strips {
+        if scroll.is_at_rest() {
+            continue;
+        }
+        if scroll.motion == StripMotion::Coast {
+            coast(&mut scroll, dt, config.swipe_deceleration());
+        } else {
+            follow(&mut scroll, dt);
+        }
+    }
+}
 
-    let scroll = &mut *strip;
-    if !scroll.is_user_swiping && scroll.velocity.abs() > 0.0001 {
-        scroll.position += scroll.velocity * dt * viewport_width * direction_modifier;
+/// Coasts the strip for `dt`, solving `dv/dt = -kv - a` exactly over the step,
+/// so the motion doesn't depend on how long frames take.
+fn coast(scroll: &mut Scrolling, dt: f64, deceleration: f64) {
+    let (speed, k) = (scroll.velocity.abs(), deceleration);
+    let ratio = STOPPING_FRICTION / k;
+    let decay = (-k * dt).exp();
+    let new_speed = (speed + ratio) * decay - ratio;
+    let travel = if new_speed > 0.0 {
+        (speed + ratio) * (1.0 - decay) / k - ratio * dt
+    } else {
+        coast_distance(speed, k)
+    };
+    scroll.position += scroll.velocity.signum() * travel;
+    scroll.target = scroll.position;
+    if new_speed > 0.0 {
+        scroll.velocity = scroll.velocity.signum() * new_speed;
+    } else {
+        scroll.velocity = 0.0;
+        scroll.motion = StripMotion::Follow;
+    }
+}
+
+/// Moves the strip toward its target as a critically damped spring, which
+/// never overshoots and keeps the strip's speed continuous when the target
+/// moves: stiff behind the fingers, soft easing into a column.
+fn follow(scroll: &mut Scrolling, dt: f64) {
+    let stiffness = if scroll.motion == StripMotion::Snap {
+        SETTLE_STIFFNESS
+    } else {
+        FOLLOW_STIFFNESS
+    };
+    let damping = 2.0 * stiffness.sqrt();
+    let steps = (dt / MAX_SPRING_SUBSTEP_SECS).ceil().max(1.0);
+    let h = dt / steps;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "at most a few dozen substeps"
+    )]
+    for _ in 0..steps as usize {
+        let accel = stiffness * (scroll.target - scroll.position) - damping * scroll.velocity;
+        scroll.velocity += accel * h;
+        scroll.position += scroll.velocity * h;
+    }
+    if (scroll.target - scroll.position).abs() < SETTLED_DISTANCE
+        && scroll.velocity.abs() < SETTLED_SPEED
+    {
+        scroll.position = scroll.target;
+        scroll.velocity = 0.0;
+        scroll.motion = StripMotion::Follow;
     }
 }
 
@@ -665,18 +774,38 @@ fn apply_scrolling_constraints(
     let (strip, ref mut position, ref mut scroll) = *strip;
 
     let get_window_frame = |entity| windows.moving_frame(entity);
-    if let Some(clamped_offset) = clamp_viewport_offset(
-        round_px(scroll.position),
-        strip,
-        &windows,
-        &get_window_frame,
-        &viewport,
-        &config,
-    ) {
-        position.x = clamped_offset;
-        scroll.position = f64::from(clamped_offset);
-    } else {
+    let clamp = |offset: f64| {
+        clamp_viewport_offset(
+            round_px(offset),
+            strip,
+            &windows,
+            &get_window_frame,
+            &viewport,
+            &config,
+        )
+    };
+
+    // Head somewhere the strip can stop, so it eases into the end of the strip
+    // rather than running into it.
+    if let Some(target) = clamp(scroll.target)
+        && target != round_px(scroll.target)
+    {
+        scroll.target = f64::from(target);
+    }
+
+    let Some(clamped) = clamp(scroll.position) else {
         scroll.velocity = 0.0;
+        scroll.target = scroll.position;
+        return;
+    };
+    // Only the clamp touches the spring's own position: rounding it to whole
+    // points every frame would stall a slow ease short of each next point.
+    if clamped != round_px(scroll.position) {
+        scroll.position = f64::from(clamped);
+        scroll.velocity = 0.0;
+    }
+    if position.x != clamped {
+        position.x = clamped;
     }
 }
 

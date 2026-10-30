@@ -479,6 +479,17 @@ impl MockState {
             }
         });
 
+        let s_move = self.clone();
+        mw.expect_reposition_soon().returning(move |origin| {
+            let mut inner = s_move.inner.force_write();
+            if let Some(w) = inner.windows.get_mut(&id) {
+                let size = w.frame.size();
+                w.frame.min = origin;
+                w.frame.max = origin + size;
+            }
+        });
+        mw.expect_recently_moved().return_const(false);
+
         let s = self.clone();
         mw.expect_focus_with_raise().returning(move |_psn| {
             s.focus_window(id);

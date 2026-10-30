@@ -108,6 +108,10 @@ pub enum Event {
     WindowFocused { window_id: WinID },
     /// A window has been moved.
     WindowMoved { window_id: WinID },
+    /// The display is about to show a frame, at `at` (seconds on the
+    /// `CACurrentMediaTime` clock). Sent once per refresh while something
+    /// animates; see `platform::frame_clock`.
+    DisplayFrame { at: f64 },
     /// A window has been resized.
     WindowResized { window_id: WinID },
     /// A window has been minimized.
@@ -251,11 +255,30 @@ impl Event {
     /// Mac app, say) would otherwise wake the loop again within a millisecond
     /// of each frame: it ran over a thousand frames a second during
     /// a swipe, each moving the windows a pixel, and reporting it back again.
+    /// A display frame is the next frame: it wakes the loop (see
+    /// [`Self::wakes_loop`]), but the next one will too, so like these it
+    /// mustn't shorten the wait after it.
     pub fn can_wait_for_frame(&self) -> bool {
         matches!(
             self,
-            Event::WindowMoved { .. } | Event::WindowResized { .. }
+            Event::WindowMoved { .. } | Event::WindowResized { .. } | Event::DisplayFrame { .. }
         )
+    }
+
+    /// Whether this can wait for the next frame, given whether the display
+    /// is timing frames (see `ecs::frame_step`). While it is, input waits too:
+    /// it only moves things on display frames anyway, and handling each event
+    /// the moment it landed (the trackpad reports about as often as the
+    /// display refreshes) ran the loop at arbitrary points between frames, so
+    /// a frame often found it busy and moved the windows late, by a different
+    /// amount each time, and some windows in one frame and the rest in the next.
+    pub fn can_wait(&self, display_timed: bool) -> bool {
+        self.can_wait_for_frame() || (display_timed && self.is_input())
+    }
+
+    /// Whether sending this ends the pump's wait.
+    pub fn wakes_loop(&self, display_timed: bool) -> bool {
+        !self.can_wait(display_timed) || matches!(self, Event::DisplayFrame { .. })
     }
 
     /// Whether this is one of the pointer or gesture events republished on
@@ -310,7 +333,7 @@ impl EventSender {
     ///
     /// `Ok(())` if the event is sent successfully, otherwise `Err(Error)` if the receiver has disconnected.
     pub fn send(&self, event: Event) -> Result<()> {
-        let wake = !event.can_wait_for_frame();
+        let wake = event.wakes_loop(self.waker.display_timed());
         self.tx.send(event)?;
         // After the queue push, so the pump cannot wake to an empty channel and
         // go back to sleep past the event that woke it.
@@ -318,5 +341,28 @@ impl EventSender {
             self.waker.wake();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Event;
+
+    #[test]
+    fn input_waits_for_the_next_display_frame_only_while_the_display_times_frames() {
+        let swipe = Event::Swipe {
+            delta: 0.1,
+            fingers: 3,
+            distance_cm: 0.5,
+        };
+        assert!(swipe.wakes_loop(false));
+        assert!(!swipe.wakes_loop(true));
+        assert!(!Event::Scroll { delta: 1.0 }.wakes_loop(true));
+
+        // Frames always wake the loop, and so does anything that isn't input.
+        let frame = Event::DisplayFrame { at: 1.0 };
+        assert!(frame.wakes_loop(false));
+        assert!(frame.wakes_loop(true));
+        assert!(Event::Exit.wakes_loop(true));
     }
 }

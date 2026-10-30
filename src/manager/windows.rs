@@ -30,6 +30,7 @@ use super::skylight::{
 };
 use crate::config::Config;
 use crate::errors::{Error, Result};
+use crate::manager::moves::{self, MoveCount};
 use crate::manager::{Origin, Size, irect_from};
 use crate::platform::{OSStatus, Pid, ProcessSerialNumber, WinID, macos_major_version};
 use crate::util::{AXUIAttributes, AXUIWrapper, MacResult};
@@ -109,6 +110,91 @@ impl<F: FnOnce() -> Result<()>> Drop for EnhancedUiGuard<F> {
             });
         }
     }
+}
+
+/// What turning `AXEnhancedUserInterface` off around a window operation
+/// needs, apart from the window itself, so a move applied on the app's queue
+/// can do it too.
+struct EnhancedUi {
+    absent: Arc<AtomicBool>,
+    state: Arc<Mutex<EnhancedUiState>>,
+    app: CFRetained<AXUIWrapper>,
+    pid: Pid,
+    window_id: WinID,
+}
+
+impl EnhancedUi {
+    /// Suppresses app-driven move/resize animations until the last guard drops.
+    /// The PID lock covers flag/counter transitions, not the window operations.
+    fn disable(self) -> Option<EnhancedUiGuard<impl FnOnce() -> Result<()> + use<>>> {
+        let EnhancedUi {
+            absent,
+            state,
+            app: app_element,
+            pid,
+            window_id,
+        } = self;
+        if absent.load(Ordering::Relaxed) {
+            return None;
+        }
+        let restore_element = app_element.clone();
+        match acquire_enhanced_ui(
+            state,
+            pid,
+            || {
+                read_enhanced_ui(&app_element).inspect(|enabled| {
+                    debug!(
+                        target: "paneru::ax_diagnostics",
+                        pid,
+                        window_id,
+                        enabled,
+                        "read AXEnhancedUserInterface"
+                    );
+                })
+            },
+            || set_enhanced_ui(&app_element, false, pid, window_id),
+            move || set_enhanced_ui(&restore_element, true, pid, window_id),
+        ) {
+            Ok(guard) => {
+                if guard.is_none() {
+                    debug!(
+                        target: "paneru::ax_diagnostics",
+                        pid,
+                        window_id,
+                        "permanently caching false; skipping enhanced UI workaround"
+                    );
+                    absent.store(true, Ordering::Relaxed);
+                }
+                guard
+            }
+            Err(err) => {
+                warn!(pid, window_id, "error reading enhanced UI: {err}");
+                None
+            }
+        }
+    }
+}
+
+/// Moves a window's frame to `point`. Returns whether there was a position to
+/// send; whether the app took it, only reading it back tells.
+fn set_position(element: &AXUIWrapper, mut point: CGPoint) -> bool {
+    let position_ref = unsafe {
+        AXValueCreate(
+            kAXValueTypeCGPoint,
+            NonNull::from(&mut point).as_ptr().cast(),
+        )
+    };
+    let Ok(position) = AXUIWrapper::from_retained(position_ref) else {
+        return false;
+    };
+    unsafe {
+        AXUIElementSetAttributeValue(
+            element.as_ptr(),
+            CFString::from_static_str(kAXPositionAttribute).as_ref(),
+            position.as_ref(),
+        )
+    };
+    true
 }
 
 fn enhanced_ui_state(pid: Pid) -> Arc<Mutex<EnhancedUiState>> {
@@ -304,6 +390,16 @@ pub trait WindowApi: Send + Sync {
     fn is_minimized(&self) -> bool;
     fn is_full_screen(&self) -> bool;
     fn reposition(&mut self, origin: Origin);
+    /// Like [`Self::reposition`], but leaves the move to land when the app is
+    /// ready instead of waiting for it. For animation frames.
+    fn reposition_soon(&mut self, origin: Origin) {
+        self.reposition(origin);
+    }
+    /// Paneru is moving this window or moved it moments ago, so an app
+    /// reporting it moved is most likely reporting that.
+    fn recently_moved(&self) -> bool {
+        false
+    }
     fn resize(&mut self, size: Size);
     fn update_frame(&mut self) -> Result<IRect>;
     fn focus_without_raise(
@@ -384,7 +480,9 @@ pub struct WindowOS {
     /// `AXEnhancedUserInterface` (the common case), so the steady-state check
     /// in [`Self::disable_enhanced_ui`] is a relaxed atomic load instead of
     /// acquiring the PID lock from every `par_iter_mut` worker.
-    enhanced_ui_absent: AtomicBool,
+    enhanced_ui_absent: Arc<AtomicBool>,
+    /// Moves posted to the app's queue, and how many have landed.
+    moves: Arc<MoveCount>,
 
     /// The last title read off the element, cached because reading one is a
     /// synchronous cross-process call and many callers want it for every
@@ -450,7 +548,8 @@ impl WindowOS {
             pid: OnceLock::new(),
             app_reference: OnceLock::new(),
             enhanced_ui_state: OnceLock::new(),
-            enhanced_ui_absent: AtomicBool::new(false),
+            enhanced_ui_absent: Arc::default(),
+            moves: Arc::default(),
             title: RwLock::new(None),
             role: OnceLock::new(),
             subrole: OnceLock::new(),
@@ -543,75 +642,69 @@ impl WindowOS {
             .clone()
     }
 
-    /// Suppresses app-driven move/resize animations until the last guard drops.
-    /// The PID lock covers flag/counter transitions, not the window operations.
-    fn disable_enhanced_ui(&self) -> Option<EnhancedUiGuard<impl FnOnce() -> Result<()> + use<>>> {
+    /// What turning `AXEnhancedUserInterface` off around an operation on this
+    /// window needs, or `None` when the app is known not to use it.
+    fn enhanced_ui(&self) -> Option<EnhancedUi> {
         if self.enhanced_ui_absent.load(Ordering::Relaxed) {
             return None;
         }
         let pid = self.pid().ok()?;
-        let state = self
-            .enhanced_ui_state
-            .get_or_init(|| enhanced_ui_state(pid))
-            .clone();
-        let app_element = self.app_reference()?;
-        let restore_element = app_element.clone();
-        let window_id = self.id;
-        match acquire_enhanced_ui(
-            state,
+        Some(EnhancedUi {
+            absent: self.enhanced_ui_absent.clone(),
+            state: self
+                .enhanced_ui_state
+                .get_or_init(|| enhanced_ui_state(pid))
+                .clone(),
+            app: self.app_reference()?,
             pid,
-            || {
-                read_enhanced_ui(&app_element).inspect(|enabled| {
-                    debug!(
-                        target: "paneru::ax_diagnostics",
-                        pid,
-                        window_id,
-                        enabled,
-                        "read AXEnhancedUserInterface"
-                    );
-                })
-            },
-            || set_enhanced_ui(&app_element, false, pid, window_id),
-            move || set_enhanced_ui(&restore_element, true, pid, window_id),
-        ) {
-            Ok(guard) => {
-                if guard.is_none() {
-                    debug!(
-                        target: "paneru::ax_diagnostics",
-                        pid,
-                        window_id,
-                        "permanently caching false; skipping enhanced UI workaround"
-                    );
-                    self.enhanced_ui_absent.store(true, Ordering::Relaxed);
-                }
-                guard
-            }
-            Err(err) => {
-                warn!(pid, window_id, "error reading enhanced UI: {err}");
-                None
-            }
+            window_id: self.id,
+        })
+    }
+
+    fn disable_enhanced_ui(&self) -> Option<EnhancedUiGuard<impl FnOnce() -> Result<()> + use<>>> {
+        self.enhanced_ui()?.disable()
+    }
+
+    /// Where the window itself goes for the layout origin `origin`.
+    fn ax_point(&self, origin: Origin) -> CGPoint {
+        CGPoint::new(
+            f64::from(origin.x + self.horizontal_padding),
+            f64::from(origin.y + self.vertical_padding),
+        )
+    }
+
+    /// Posts a move to `origin` to the app's queue (see [`moves`]), and books
+    /// the window as being there.
+    fn post_move(&mut self, origin: Origin) {
+        let Ok(pid) = self.pid() else {
+            let _enhanced_ui = self.disable_enhanced_ui();
+            self.set_ax_position(origin);
+            return;
+        };
+        let element = self.ax_element.clone();
+        let point = self.ax_point(origin);
+        let enhanced_ui = self.enhanced_ui();
+        moves::post(pid, self.id, &self.moves, move || {
+            let _enhanced_ui = enhanced_ui.and_then(EnhancedUi::disable);
+            set_position(&element, point);
+        });
+        let size = self.frame.size();
+        self.frame.min = origin;
+        self.frame.max = origin + size;
+    }
+
+    /// Waits for moves posted to the app's queue to land, so the window is
+    /// where it's booked before reading or changing it here.
+    fn wait_for_moves(&self) {
+        if self.moves.in_flight()
+            && let Ok(pid) = self.pid()
+        {
+            moves::flush(pid);
         }
     }
 
     fn set_ax_position(&mut self, origin: Origin) {
-        let mut point = CGPoint::new(
-            f64::from(origin.x + self.horizontal_padding),
-            f64::from(origin.y + self.vertical_padding),
-        );
-        let position_ref = unsafe {
-            AXValueCreate(
-                kAXValueTypeCGPoint,
-                NonNull::from(&mut point).as_ptr().cast(),
-            )
-        };
-        if let Ok(position) = AXUIWrapper::from_retained(position_ref) {
-            unsafe {
-                AXUIElementSetAttributeValue(
-                    self.ax_element.as_ptr(),
-                    CFString::from_static_str(kAXPositionAttribute).as_ref(),
-                    position.as_ref(),
-                )
-            };
+        if set_position(&self.ax_element, self.ax_point(origin)) {
             let size = self.frame.size();
             self.frame.min = origin;
             self.frame.max = origin + size;
@@ -786,8 +879,20 @@ impl WindowApi for WindowOS {
             trace!("already in position.");
             return;
         }
-        let _enhanced_ui = self.disable_enhanced_ui();
-        self.set_ax_position(origin);
+        // Through the app's queue, so it can't overtake a move still on it.
+        self.post_move(origin);
+        self.wait_for_moves();
+    }
+
+    fn reposition_soon(&mut self, origin: Origin) {
+        if self.frame.min == origin {
+            return;
+        }
+        self.post_move(origin);
+    }
+
+    fn recently_moved(&self) -> bool {
+        self.moves.recently_moved()
     }
 
     #[instrument(level = Level::TRACE)]
@@ -796,6 +901,7 @@ impl WindowApi for WindowOS {
             trace!("already correct size.");
             return;
         }
+        self.wait_for_moves();
         let previous_frame = self.frame;
         let target_origin = previous_frame.min;
         let _enhanced_ui = self.disable_enhanced_ui();
@@ -848,6 +954,7 @@ impl WindowApi for WindowOS {
     ///
     /// `Ok(())` if the frame is updated successfully, otherwise `Err(Error)`.
     fn update_frame(&mut self) -> Result<IRect> {
+        self.wait_for_moves();
         let window_ref = self.ax_element.as_ptr();
 
         let position = unsafe {

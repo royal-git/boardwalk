@@ -2691,6 +2691,7 @@ dependencies = [
  "crossbeam-channel",
  "ctrlc",
  "derive_more",
+ "dispatch2",
  "embed_plist",
  "futures-lite",
  "launchctl",

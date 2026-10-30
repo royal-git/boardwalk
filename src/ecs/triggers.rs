@@ -536,6 +536,7 @@ pub(super) fn application_event_trigger(
             Event::ApplicationTerminated { psn } => {
                 if let Some((BProcess(process), entity)) = find_process(*psn) {
                     forget_enhanced_ui_state(process.pid());
+                    crate::manager::moves::forget(process.pid());
                     if let Ok(mut entity_commands) = commands.get_entity(entity) {
                         entity_commands.try_despawn();
                     }

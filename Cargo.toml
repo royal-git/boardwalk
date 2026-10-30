@@ -87,6 +87,7 @@ clap = { version = "4.6", features = ["cargo", "derive"] }
 # `Res` rather than a `Mutex` behind a `ResMut`.
 crossbeam-channel = "0.5"
 derive_more = { version = "2.1", features = ["deref", "deref_mut"] }
+dispatch2 = "0.3"
 embed_plist = "1.2"
 launchctl = "0.3"
 libc = "0.2"
@@ -113,10 +114,13 @@ objc2-app-kit = { version = "0.3", features = [
   "NSStringDrawing",
   "NSImage",
   "NSControl",
+  "objc2-quartz-core",
 ] }
 objc2-core-foundation = { version = "0.3", features = ["CFRunLoop"] }
 objc2-core-graphics = "0.3"
 objc2-quartz-core = { version = "0.3", features = [
+  "CADisplayLink",
+  "CAFrameRateRange",
   "CALayer",
   "objc2-core-foundation",
   "objc2-core-graphics",
@@ -127,6 +131,9 @@ objc2-foundation = { version = "0.3", features = [
   "NSAttributedString",
   "NSDictionary",
   "NSBundle",
+  "NSRunLoop",
+  "NSString",
+  "NSValue",
 ] }
 regex = "1.13"
 rmp-serde = "1.2"

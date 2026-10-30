@@ -955,6 +955,7 @@ fn handle_virtual_window_moves(
             }
             if let Ok(mut scroll) = scrollings.get_mut(target_entity) {
                 scroll.position = f64::from(desired_scroll);
+                scroll.target = scroll.position;
                 scroll.velocity = 0.0;
             }
         }

@@ -25,6 +25,7 @@ use super::{
 
 use crate::config::{Config, decorations::BorderRadiusOption};
 use crate::ecs::display::FloatingLayer;
+use crate::ecs::frame_step::FrameStep;
 use crate::ecs::layout::{Column, LayoutStrip};
 use crate::ecs::params::{ActiveDisplay, FrameActivity, Windows};
 use crate::ecs::{
@@ -87,6 +88,9 @@ const ANIAMTE_SNAP_THRESHOLD: f32 = 5.0;
 // One frame of a 120 Hz display: while windows animate, nothing else may wake
 // the loop (apps reporting the moves don't), so this paces the animation.
 const LOOP_MAX_TIMEOUT_FRAME_ACTIVE_MS: u32 = 8;
+// While the display times frames, each one wakes the loop (see
+// `frame_step`); this only covers frames that stop coming.
+const LOOP_MAX_TIMEOUT_DISPLAY_TIMED_MS: u32 = 40;
 const LOOP_MAX_TIMEOUT_LOWPOWER_MS: u32 = 2000;
 // Real events (input, IPC, workspace changes, ...) wake the pump immediately
 // via `EventLoopWaker`, so this only bounds how late the free-running 1s
@@ -592,8 +596,8 @@ pub(super) fn retry_front_switch(
 /// power mode), `Time::delta_secs_f64()` reports the entire sleep duration on
 /// the wakeup frame. Feeding that straight into the exponential decay would
 /// consume almost the entire distance on Frame 0 and turn the animation into a
-/// single-frame jump. Cap each frame's step to a 30fps tick (matching the
-/// scroll integrator's `MAX_STEP_SECS`) so the wakeup frame steps smoothly.
+/// single-frame jump. Cap each frame's step to a 30fps tick (matching
+/// `frame_step::MAX_FRAME_STEP_SECS`) so the wakeup frame steps smoothly.
 const MAX_ANIMATION_STEP_SECS: f64 = 1.0 / 30.0;
 
 /// Animates window movement.
@@ -607,6 +611,23 @@ const MAX_ANIMATION_STEP_SECS: f64 = 1.0 / 30.0;
 fn ease_out_factor(rate: f64, delta: f64) -> f32 {
     let delta = delta.min(MAX_ANIMATION_STEP_SECS);
     (1.0 - (-rate * delta).exp()).clamp(0.0, 1.0) as f32
+}
+
+/// One step of an ease-out from `current` toward `target`, covering the
+/// fraction `t` of the way, in whole points. Returns where to go and whether
+/// that's the target. Close enough, or too close for the step to move a whole
+/// point on either axis, it goes straight to the target: rounding would
+/// otherwise hold it in place for good. Four points off on both axes is over
+/// the snap distance diagonally, yet a 120 Hz step moves less than half a point
+/// each way.
+fn ease_step(current: bevy::math::IVec2, target: bevy::math::IVec2, t: f32) -> (bevy::math::IVec2, bool) {
+    let lerped = current.as_vec2().lerp(target.as_vec2(), t);
+    let next = lerped.round().as_ivec2();
+    if (target.as_vec2() - lerped).length() <= ANIAMTE_SNAP_THRESHOLD || next == current {
+        (target, true)
+    } else {
+        (next, false)
+    }
 }
 
 /// This is a Bevy system that runs on `Update`. It smoothly moves windows to their target
@@ -624,29 +645,21 @@ fn ease_out_factor(rate: f64, delta: f64) -> f32 {
 #[instrument(level = Level::TRACE, skip_all)]
 pub(super) fn animate_entities(
     animate: Populated<(&mut Position, Entity, &RepositionMarker)>,
-    time: Res<Time>,
+    frame_step: Res<FrameStep>,
     config: Res<Config>,
     mut commands: Commands,
 ) {
+    let Some(dt) = frame_step.dt() else {
+        return;
+    };
     // Frame-rate-independent exponential smoothing (ease-out).
     // `animation_speed` is the decay rate (per second); higher = snappier.
-    let t = ease_out_factor(config.animation_speed(), time.delta_secs_f64());
+    let t = ease_out_factor(config.animation_speed(), dt);
 
     animate
         .into_iter()
         .for_each(|(mut position, entity, RepositionMarker(origin))| {
-            let target = origin.as_vec2();
-            let current = position.0.as_vec2();
-            let lerped = current.lerp(target, t);
-
-            // Snap once we're within a pixel of the target (or after one effectively-
-            // complete tick), so the marker is dropped promptly.
-            let finished = (target - lerped).length() <= ANIAMTE_SNAP_THRESHOLD;
-            let new_pos = if finished {
-                *origin
-            } else {
-                lerped.round().as_ivec2()
-            };
+            let (new_pos, finished) = ease_step(position.0, *origin, t);
 
             trace!(
                 "entity {entity} source {} dest {origin} t {t:.3} moving to {new_pos}",
@@ -672,26 +685,20 @@ pub(super) fn animate_entities(
 #[instrument(level = Level::TRACE, skip_all)]
 pub(super) fn animate_resize_entities(
     animate: Populated<(&mut Bounds, Entity, &ResizeMarker)>,
-    time: Res<Time>,
+    frame_step: Res<FrameStep>,
     config: Res<Config>,
     mut commands: Commands,
 ) {
+    let Some(dt) = frame_step.dt() else {
+        return;
+    };
     // Matches animate_entities: exponential ease-out, frame-rate independent.
-    let t = ease_out_factor(config.animation_speed(), time.delta_secs_f64());
+    let t = ease_out_factor(config.animation_speed(), dt);
 
     animate
         .into_iter()
         .for_each(|(mut bounds, entity, ResizeMarker(size))| {
-            let target = size.as_vec2();
-            let current = bounds.0.as_vec2();
-            let lerped = current.lerp(target, t);
-
-            let finished = (target - lerped).length() <= ANIAMTE_SNAP_THRESHOLD;
-            let new_size = if finished {
-                *size
-            } else {
-                lerped.round().as_ivec2()
-            };
+            let (new_size, finished) = ease_step(bounds.0, *size, t);
 
             trace!(
                 "entity {entity} source {} dest {size} t {t:.3} resizing to {new_size}",
@@ -728,6 +735,7 @@ pub(crate) fn pump_events(
     incoming_events: Option<NonSend<Receiver<Event>>>,
     platform: Option<NonSendMut<Pin<Box<PlatformCallbacks>>>>,
     activity: FrameActivity,
+    frame_step: Res<FrameStep>,
     mut timeout: Local<u32>,
     mut last_tap_check: Local<Option<Instant>>,
 ) {
@@ -771,8 +779,8 @@ pub(crate) fn pump_events(
             Ok(event) => {
                 woke |= matches!(event, Event::SystemWoke { .. });
                 // Moves and resizes reported back don't count as activity:
-                // they mustn't shorten the next wait (see `can_wait_for_frame`).
-                if !event.can_wait_for_frame() {
+                // they mustn't shorten the next wait (see `Event::can_wait`).
+                if !event.can_wait(frame_step.display_timed()) {
                     *timeout = LOOP_TIMEOUT_STEP;
                 }
                 if matches!(event, Event::MouseMoved { .. }) {
@@ -792,14 +800,22 @@ pub(crate) fn pump_events(
     if drained {
         let frame_active = activity.mid_frame();
         let low_power = low_power_mode.is_some_and(|low_power| low_power.0);
-        let timeout_limit = if frame_active {
+        let timeout_limit = if frame_active && frame_step.display_timed() {
+            LOOP_MAX_TIMEOUT_DISPLAY_TIMED_MS
+        } else if frame_active {
             LOOP_MAX_TIMEOUT_FRAME_ACTIVE_MS
         } else if low_power {
             LOOP_MAX_TIMEOUT_LOWPOWER_MS
         } else {
             LOOP_MAX_TIMEOUT_MS
         };
-        *timeout = next_pump_timeout(*timeout, timeout_limit);
+        *timeout = if frame_active && frame_step.display_timed() {
+            // The display's next frame wakes the loop; waking sooner on our
+            // own would only run it between frames.
+            timeout_limit
+        } else {
+            next_pump_timeout(*timeout, timeout_limit)
+        };
     } else {
         // Still backed up: come straight back rather than sleeping on it.
         *timeout = LOOP_TIMEOUT_STEP;
@@ -915,8 +931,11 @@ pub(crate) fn window_moved_update_frame(
         }
         // Our own move, echoed back: `animate_entities` lerps from the current
         // `Position`, so overwriting it with the echoed frame mid-animation
-        // restarts each step from behind, and the two chase each other.
-        if repositioning {
+        // restarts each step from behind, and the two chase each other. And
+        // while a move is still on its way, reading the frame back would only
+        // find where the window was before it, at the cost of two calls into
+        // the app every frame.
+        if repositioning || window.recently_moved() {
             continue;
         }
         let Ok(new_frame) = window.update_frame() else {
@@ -1140,13 +1159,11 @@ pub(super) fn update_overlays(
 pub(super) fn commit_window_position(
     mut moved_windows: Populated<(&mut Window, &Position), Changed<Position>>,
 ) {
-    // `par_iter_mut` runs on `ComputeTaskPool` worker threads, which have no
-    // `CFRunLoop` of their own to drain thread-local autorelease pools.
-    moved_windows
-        .par_iter_mut()
-        .for_each(|(mut window, position)| {
-            objc2::rc::autoreleasepool(|_| window.reposition(position.0));
-        });
+    // Each app's queue moves its windows when the app is ready (see
+    // `manager::moves`), so a slow app can't hold up the frame.
+    for (mut window, position) in &mut moved_windows {
+        window.reposition_soon(position.0);
+    }
 }
 
 #[instrument(level = Level::TRACE, skip_all)]
@@ -1774,5 +1791,33 @@ mod pump_timeout_tests {
                 assert!(timeout <= idle, "waiting {timeout} ms after {idle} ms idle");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod ease_step_tests {
+    use super::{ease_out_factor, ease_step};
+    use bevy::math::IVec2;
+
+    /// Steps at 120 Hz until done, returning how many steps it took.
+    fn steps_to_finish(from: IVec2, to: IVec2) -> usize {
+        let t = ease_out_factor(14.0, 1.0 / 120.0);
+        let mut current = from;
+        for step in 1..=1000 {
+            let (next, finished) = ease_step(current, to, t);
+            current = next;
+            if finished {
+                assert_eq!(current, to);
+                return step;
+            }
+        }
+        panic!("never reached {to} from {from}");
+    }
+
+    #[test]
+    fn an_ease_finishes_even_when_each_step_rounds_to_nothing() {
+        // Over the snap distance diagonally, under half a point per axis per step.
+        assert_eq!(steps_to_finish(IVec2::new(4, 4), IVec2::ZERO), 1);
+        assert!(steps_to_finish(IVec2::new(-600, 3), IVec2::ZERO) < 60);
     }
 }

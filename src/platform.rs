@@ -8,6 +8,7 @@ use objc2_app_kit::{
     NSEventType,
 };
 use objc2_core_foundation::CFString;
+use objc2_core_graphics::CGDirectDisplayID;
 use objc2_foundation::{NSDate, NSDefaultRunLoopMode, NSPoint, NSProcessInfo};
 use std::ffi::{c_short, c_void};
 use std::pin::Pin;
@@ -24,6 +25,7 @@ use crate::platform::input::{PinnedInputHandler, TapHealth};
 use crate::platform::notify::{NotifyHandler, PinnedNotifyHandler};
 use crate::platform::process::PinnedProcessHandler;
 use display::DisplayHandler;
+use frame_clock::FrameClock;
 use input::InputHandler;
 use mission_control::MissionControlHandler;
 use process::ProcessHandler;
@@ -32,6 +34,7 @@ pub use workspace::WorkspaceObserver;
 
 pub(crate) mod app_launcher;
 mod display;
+mod frame_clock;
 pub(crate) mod haptics;
 pub(crate) mod input;
 mod mission_control;
@@ -164,6 +167,9 @@ pub struct EventLoopWaker {
     /// Empty until [`Self::install`] runs, because `postEvent:` silently drops
     /// events until the app has finished launching.
     app: OnceLock<NonNull<NSApplication>>,
+    /// The display is timing frames, so input can wait for the next one (see
+    /// `Event::can_wait`).
+    display_timed: AtomicBool,
 }
 
 // SAFETY: the only message sent through `app` is `postEvent:atStart:`, which is
@@ -176,7 +182,13 @@ impl EventLoopWaker {
         Self {
             pending: AtomicBool::new(false),
             app: OnceLock::new(),
+            display_timed: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the display is timing frames.
+    pub fn display_timed(&self) -> bool {
+        self.display_timed.load(Ordering::Acquire)
     }
 
     /// Points the waker at the running application. Called once, on the main
@@ -254,6 +266,8 @@ pub struct PlatformCallbacks {
     /// Handler for Core Graphics display reconfiguration events.
     display_handler: Option<PinnedDisplayHandler>,
     notify_handler: Option<PinnedNotifyHandler>,
+    /// Times animation frames to the display; see [`FrameClock`].
+    frame_clock: FrameClock,
 }
 
 impl PlatformCallbacks {
@@ -292,6 +306,7 @@ impl PlatformCallbacks {
             mission_control_observer: MissionControlHandler::new(events.clone()),
             display_handler: None,
             notify_handler: None,
+            frame_clock: FrameClock::new(events.clone()),
             events,
         })
     }
@@ -338,6 +353,17 @@ impl PlatformCallbacks {
 
         self.events.send(Event::ProcessesLoaded)?;
         Ok(config)
+    }
+
+    /// Sends [`Event::DisplayFrame`] once per refresh of `display`, or stops
+    /// for `None`. Returns whether frames are coming.
+    pub fn run_frame_clock(&mut self, display: Option<CGDirectDisplayID>) -> bool {
+        let running = self.frame_clock.run(display, self.main_thread_marker);
+        self.events
+            .waker()
+            .display_timed
+            .store(running, Ordering::Release);
+        running
     }
 
     /// Checks the input tap still delivers events and revives it when it does
