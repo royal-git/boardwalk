@@ -23,6 +23,8 @@ cp "$BIN" "$APP/Contents/MacOS/Boardwalk"
 cp paneru/target/release/paneru "$APP/Contents/MacOS/paneru"
 # Written to ~/.paneru.toml when there's no Paneru configuration yet.
 cp Resources/paneru.toml "$APP/Contents/Resources/paneru.toml"
+# Made from Resources/AppIcon-artwork.png by scripts/make-icon.swift.
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -34,6 +36,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIdentifier</key><string>com.royal-git.boardwalk</string>
     <key>CFBundleExecutable</key><string>Boardwalk</string>
     <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
