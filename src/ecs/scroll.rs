@@ -300,10 +300,12 @@ const SETTLED_SPEED: f64 = 20.0;
 /// Measured over a window rather than per frame, because frame timing says
 /// nothing about finger speed: frames come as fast as events wake the loop,
 /// sometimes well under a millisecond apart, and one trackpad sample divided
-/// by such a frame reads as a burst of speed. The window spans several samples
-/// whatever the frame rate, and is short enough that pausing before lifting
-/// leaves nothing to coast on.
-const RELEASE_VELOCITY_WINDOW: Duration = Duration::from_millis(80);
+/// by such a frame reads as a burst of speed. The window spans about six
+/// samples, and is short enough that pausing before lifting leaves nothing to
+/// coast on. Fingers are still speeding up as they flick, so a longer window
+/// reads them slower than the strip is moving: at 80 ms the strip stepped down
+/// to about 86% of its speed as it started to coast, at 50 ms it carries on.
+const RELEASE_VELOCITY_WINDOW: Duration = Duration::from_millis(50);
 
 /// Finger travel per frame over the last [`RELEASE_VELOCITY_WINDOW`], for the
 /// speed a swipe is released at.
