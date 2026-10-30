@@ -21,6 +21,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Boardwalk"
 # Next to the app's executable, where the app looks for it and starts it.
 cp paneru/target/release/paneru "$APP/Contents/MacOS/paneru"
+# Written to ~/.paneru.toml when there's no Paneru configuration yet.
+cp Resources/paneru.toml "$APP/Contents/Resources/paneru.toml"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

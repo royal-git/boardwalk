@@ -1,0 +1,84 @@
+# Paneru, the window manager that comes with Boardwalk, set up to work with
+# Boardwalk's dock. Boardwalk wrote this file because there was no Paneru
+# configuration yet; it's yours to change and won't be written again.
+# All the options: https://github.com/karinushka/paneru/blob/main/CONFIGURATION.md
+# Saved changes reload automatically.
+
+[options]
+# Mac-like focus: click to focus, and the pointer never jumps on its own.
+focus_follows_mouse = false
+mouse_follows_focus = false
+# Widths ⌃⌘= and ⌃⌘- step through: a third, half, two-thirds, full screen.
+preset_column_widths = [0.33, 0.5, 0.66, 1.0]
+preset_stack_heights = [0.33, 0.5, 0.66]
+animation_speed = 14
+# Bring a window fully into view whenever it gets focus.
+window_hidden_ratio = 0.0
+
+[padding]
+# Room for Boardwalk's dock: windows stop just above it (the dock plus 4 pt,
+# and each window's own 4 pt padding below makes an 8 pt gap). The menu bar is
+# handled automatically.
+bottom = 82
+
+[swipe]
+continuous = false
+# How far the strip slides for the distance the fingers move.
+sensitivity = 0.5
+
+# Three fingers sideways slide through the windows, following the fingers.
+# Four fingers still switch desktops. Turn off three-finger drag (System
+# Settings > Accessibility > Pointer Control > Trackpad Options), which uses
+# the same gesture.
+[swipe.gesture]
+fingers_count = 3
+direction = "Natural"
+vertical = false
+
+[decorations]
+# No popup with the workspace number on every desktop switch.
+workspace_popup_status = false
+
+[bindings]
+# ⌃⌘ arrows: move between windows (up/down within a stacked pair).
+window_focus_west = "ctrl + cmd - leftarrow"
+window_focus_east = "ctrl + cmd - rightarrow"
+window_focus_north = "ctrl + cmd - uparrow"
+window_focus_south = "ctrl + cmd - downarrow"
+# Add ⇧ to carry the window with you.
+window_swap_west = "ctrl + cmd + shift - leftarrow"
+window_swap_east = "ctrl + cmd + shift - rightarrow"
+window_swap_north = "ctrl + cmd + shift - uparrow"
+window_swap_south = "ctrl + cmd + shift - downarrow"
+# Widths, full width, centering.
+window_grow = "ctrl + cmd - equal"
+window_shrink = "ctrl + cmd - minus"
+window_fullwidth = "ctrl + cmd - return"
+window_center = "ctrl + cmd - c"
+window_balance = "ctrl + cmd - b"
+# Pairs: S stacks this window under the one to its left, U splits it back out.
+window_stack = "ctrl + cmd - s"
+window_unstack = "ctrl + cmd - u"
+# T lets a window float freely, or tiles it again.
+window_manage = "ctrl + cmd - t"
+
+# Every window opens at half the screen, so two sit side by side. Each is padded
+# 4 pt inside its column, which leaves an 8 pt gap between windows (4 pt at the
+# screen's edges): a gap that's always there hides the few points neighbours
+# can drift apart while sliding.
+[windows.default]
+title = ".*"
+width = 0.5
+horizontal_padding = 4
+vertical_padding = 4
+
+# Small utility windows float instead of joining the strip.
+[windows.settings]
+title = ".*"
+bundle_id = "com.apple.systempreferences"
+floating = true
+
+[windows.calculator]
+title = ".*"
+bundle_id = "com.apple.calculator"
+floating = true

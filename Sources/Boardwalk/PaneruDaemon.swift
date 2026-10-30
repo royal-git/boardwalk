@@ -5,8 +5,10 @@ import Foundation
 /// windows. Paneru runs as the app's own child, so macOS asks for one
 /// Accessibility permission, the app's, for both. If it stops, it's started
 /// again, after a wait that grows while it keeps stopping soon after starting.
-/// Its output goes to `~/Library/Logs/Boardwalk/paneru.log`. Used from the main
-/// thread only.
+/// Its output goes to `~/Library/Logs/Boardwalk/paneru.log`. Paneru without a
+/// configuration of its own leaves no room for the dock and ignores swipes, so
+/// the first time there's none, the app's starter one is written for it. Used
+/// from the main thread only.
 final class PaneruDaemon {
     private let executable: URL?
     private var process: Process?
@@ -57,6 +59,7 @@ final class PaneruDaemon {
     }
 
     private func run(_ executable: URL) {
+        Self.writeStarterConfiguration()
         let process = Process()
         process.executableURL = executable
         process.arguments = ["launch"]
@@ -96,6 +99,25 @@ final class PaneruDaemon {
         }
         pendingLaunch = launch
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: launch)
+    }
+
+    /// Writes the app's starter configuration to `~/.paneru.toml` when Paneru
+    /// would find none: not in `$PANERU_CONFIG`, `~/.paneru`, `~/.paneru.toml`
+    /// or `~/.config/paneru/paneru.toml`.
+    private static func writeStarterConfiguration() {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let configHome = ProcessInfo.processInfo.environment["XDG_CONFIG_HOME"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? home.appendingPathComponent(".config", isDirectory: true)
+        let existing = [
+            ProcessInfo.processInfo.environment["PANERU_CONFIG"].map { URL(fileURLWithPath: $0) },
+            home.appendingPathComponent(".paneru"),
+            home.appendingPathComponent(".paneru.toml"),
+            configHome.appendingPathComponent("paneru/paneru.toml"),
+        ].compactMap { $0 }
+        guard !existing.contains(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let starter = Bundle.main.url(forResource: "paneru", withExtension: "toml") else { return }
+        try? FileManager.default.copyItem(at: starter, to: home.appendingPathComponent(".paneru.toml"))
     }
 
     /// The log, opened for appending; nil if it can't be.

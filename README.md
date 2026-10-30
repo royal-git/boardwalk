@@ -9,6 +9,8 @@ A different dock for each macOS desktop, like Arc's spaces for the Mac dock. Des
 
 Boardwalk draws its own dock. It doesn't edit Apple's Dock, because Apple's Dock can only change its icons by restarting, and that makes it blink. Apple's Dock is also the same on every desktop.
 
+It also brings a window manager, [Paneru](https://github.com/karinushka/paneru): each desktop's windows sit side by side in a strip you slide along with three fingers, and the dock shows them in the same order.
+
 ## What it does
 
 - **One dock per desktop.** Each desktop's dock has a name, a color, an icon, and its own pinned apps, folders, files and links. When you add a desktop in Mission Control, a matching dock appears. In the editor, drag the list to change which dock goes with which desktop.
@@ -22,7 +24,7 @@ Boardwalk draws its own dock. It doesn't edit Apple's Dock, because Apple's Dock
   - then ↑ or ↓ for the top or bottom half of those columns: ← ↑ is the top-left quarter, ← → ↓ the bottom of the center third
   - ↩ maximize, C center, T tile every window on this desktop
 
-  Moving other apps' windows needs Accessibility permission, which macOS asks for the first time you arrange. Minimized windows and badges need it too; the rest of Boardwalk works without it. macOS's own tiling (Fn⌃ arrows, dragging a window to a screen edge) doesn't know about Boardwalk and still goes under the dock.
+  Moving other apps' windows needs Accessibility permission, which macOS asks for the first time you arrange. The window manager, minimized windows and badges need it too; the rest of Boardwalk works without it. The window manager runs as part of Boardwalk, so the one permission covers both. macOS's own tiling (Fn⌃ arrows, dragging a window to a screen edge) doesn't know about Boardwalk and still goes under the dock.
 - **Minimized windows** show at the right end of the dock of the desktop they came from, as a small window with its app's icon in the corner. Hover one for its title; click it to bring the window back.
 - **Opening apps bounce**, as in Apple's Dock, until they've finished launching, whether you opened them from the dock or somewhere else.
 - **Badges** that apps put on their Dock icons, like Mail's unread count, show on their tiles. Boardwalk reads them from Apple's Dock, which keeps them while it's hidden.
@@ -30,6 +32,7 @@ Boardwalk draws its own dock. It doesn't edit Apple's Dock, because Apple's Dock
 - **Shared items** stay in the dock on every desktop, for example Finder and Downloads.
 - **Drop to add or open.** Drag a file, folder or link onto an app to open it with that app. Drag an app anywhere onto the dock, or anything else between tiles or onto a folder, to add it to this desktop's dock. Right-click a tile to show it in Finder, hide the app or quit it; hold ⌥ to force quit.
 - **Import.** "Copy Apple's Dock into This Desktop" fills the current desktop's dock from Apple's Dock.
+- **Sliding windows.** Each desktop's windows open side by side in a strip, half the screen wide by default, and stop just above the dock. Swipe sideways with three fingers and the strip follows them one to one, in step with the display; flick and it glides on. Four fingers still switch desktops. The dock shows the strip's windows in order, and dragging one along the dock moves it in the strip. Keyboard shortcuts (⌃⌘ arrows move between windows, add ⇧ to carry one along), widths and gaps are set in `~/.paneru.toml`, which Boardwalk writes with these settings if you don't have one yet ([`Resources/paneru.toml`](Resources/paneru.toml)); see [Paneru's configuration](paneru/CONFIGURATION.md) for the rest. Swiping with three fingers needs three-finger drag turned off, in System Settings › Accessibility › Pointer Control › Trackpad Options.
 
 ## How it follows desktops
 
@@ -47,13 +50,15 @@ defaults delete com.apple.dock autohide-delay && killall Dock
 
 ## Build and run
 
-Requires macOS 13 or later and Xcode 15 or later (or the Swift 5.9+ toolchain).
+Requires macOS 13 or later, Xcode 15 or later (or the Swift 5.9+ toolchain), and [Rust](https://rustup.rs) for the window manager. Sliding in step with the display needs macOS 14.
 
 ```sh
-swift run Boardwalk          # quick run from the terminal
-./scripts/build-app.sh        # builds Boardwalk.app (menu bar only; signed with your Apple Development certificate if you have one, so permissions survive rebuilds)
+./scripts/build-app.sh        # builds Boardwalk.app with the window manager inside (menu bar only; signed with your Apple Development certificate if you have one, so permissions survive rebuilds)
 open Boardwalk.app
+swift run Boardwalk          # just the dock, from the terminal; it uses a Paneru you've installed, if any
 ```
+
+If you already run Paneru on its own (`paneru install`), Boardwalk leaves the windows to it; run `paneru uninstall` to let Boardwalk's take over. The window manager's log is `~/Library/Logs/Boardwalk/paneru.log`.
 
 To work in Xcode, run `open Package.swift`.
 
@@ -66,6 +71,8 @@ Your desktop docks are saved as JSON in `~/Library/Application Support/Boardwalk
 | `Sources/BoardwalkCore` | Plain Foundation code with no UI. It holds the per-desktop dock model (`Space`, one per desktop), the rule for which open apps show on a desktop, JSON storage, the reader for Apple's Dock format (used by import), and window layouts and arrow combos. |
 | `Sources/Boardwalk` | The app. It contains the dock panel and its view, desktop and window tracking (`Desktops.swift`, `MinimizedWindows.swift`), arranging windows (`WindowManager.swift`, `HotKeys.swift`), the menu bar menu, and the editor window. |
 | `Tests/BoardwalkCoreTests` | Unit tests for the core, run with `swift test`. |
+| `Resources/paneru.toml` | The window manager's starter configuration, set up for the dock. |
+| `paneru` | The window manager, in Rust: [Paneru](https://github.com/karinushka/paneru) with Boardwalk's changes (following the fingers in step with the display, moving each app's windows on a queue of its own, placing a window from the dock). Its history is kept, so `git subtree pull --prefix=paneru https://github.com/karinushka/paneru main` brings in upstream changes. Its tests run with `cargo test` there. |
 
 ## Not yet
 
@@ -75,4 +82,4 @@ Your desktop docks are saved as JSON in `~/Library/Application Support/Boardwalk
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). Paneru is by Karinushka, also MIT: see [paneru/LICENSE.txt](paneru/LICENSE.txt). Boardwalk's changes to it are MIT too.
