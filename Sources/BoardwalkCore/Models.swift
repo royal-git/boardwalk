@@ -64,7 +64,7 @@ public struct DockItem: Codable, Hashable, Identifiable {
 }
 
 /// The dock for one macOS desktop: its own apps, folders, files and links.
-/// BetterDock keeps one `Space` per desktop, in desktop order.
+/// Boardwalk keeps one `Space` per desktop, in desktop order.
 public struct Space: Codable, Hashable, Identifiable {
     public var id: UUID
     public var name: String
@@ -116,7 +116,7 @@ public struct Space: Codable, Hashable, Identifiable {
     }
 }
 
-/// Everything BetterDock persists.
+/// Everything Boardwalk persists.
 public struct SpaceLibrary: Codable, Hashable {
     /// One per macOS desktop, in desktop order: `spaces[0]` is Desktop 1.
     public var spaces: [Space]

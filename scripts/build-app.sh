@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Builds BetterDock.app (menu bar only, signed) into the repo root.
+# Builds Boardwalk.app (menu bar only, signed) into the repo root.
 #   ./scripts/build-app.sh            # release build
 #   CONFIG=debug ./scripts/build-app.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 CONFIG="${CONFIG:-release}"
-APP="BetterDock.app"
+APP="Boardwalk.app"
 
 swift build -c "$CONFIG"
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/BetterDock"
+BIN="$(swift build -c "$CONFIG" --show-bin-path)/Boardwalk"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/BetterDock"
+cp "$BIN" "$APP/Contents/MacOS/Boardwalk"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>BetterDock</string>
-    <key>CFBundleDisplayName</key><string>BetterDock</string>
-    <key>CFBundleIdentifier</key><string>com.royal-git.betterdock</string>
-    <key>CFBundleExecutable</key><string>BetterDock</string>
+    <key>CFBundleName</key><string>Boardwalk</string>
+    <key>CFBundleDisplayName</key><string>Boardwalk</string>
+    <key>CFBundleIdentifier</key><string>com.royal-git.boardwalk</string>
+    <key>CFBundleExecutable</key><string>Boardwalk</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>

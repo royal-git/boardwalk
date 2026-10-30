@@ -1,5 +1,5 @@
 import XCTest
-@testable import BetterDockCore
+@testable import BoardwalkCore
 
 final class DockPlistTests: XCTestCase {
     func url(_ string: String) -> DockPlist.Tile {
@@ -79,6 +79,25 @@ final class SpaceLibraryTests: XCTestCase {
         let library = SpaceLibrary.starter
         try storage.save(library)
         XCTAssertEqual(try storage.load(), library)
+    }
+
+    func testLegacyLibraryIsReadUntilTheFirstSave() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let legacy = LibraryStorage(fileURL: dir.appendingPathComponent("old/spaces.json"))
+        var old = SpaceLibrary.starter
+        old.activeSpaceID = nil
+        try legacy.save(old)
+        let storage = LibraryStorage(
+            fileURL: dir.appendingPathComponent("new/spaces.json"),
+            legacyFileURL: legacy.fileURL
+        )
+
+        XCTAssertEqual(try storage.load(), old)
+        let library = SpaceLibrary.starter
+        try storage.save(library)
+        XCTAssertEqual(try storage.load(), library)
+        XCTAssertEqual(try legacy.load(), old, "the old library stays as a backup")
     }
 }
 

@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 @main
-struct BetterDockApp: App {
+struct BoardwalkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
@@ -14,7 +14,7 @@ struct BetterDockApp: App {
                 .environmentObject(appDelegate.model)
         }
 
-        Window("BetterDock", id: SpacesEditor.windowID) {
+        Window("Boardwalk", id: SpacesEditor.windowID) {
             SpacesEditor()
                 .environmentObject(appDelegate.model)
                 .frame(minWidth: 820, minHeight: 560)

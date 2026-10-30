@@ -1,4 +1,4 @@
-import BetterDockCore
+import BoardwalkCore
 import CoreGraphics
 import Foundation
 
@@ -18,7 +18,7 @@ final class Paneru {
     ]
 
     private let onChange: ([Int: Strip]) -> Void
-    private let queue = DispatchQueue(label: "BetterDock.paneru")
+    private let queue = DispatchQueue(label: "Boardwalk.paneru")
     private var subscription: Process?
     private var strips: [Int: Strip] = [:]
     /// When Paneru last reported windows moving.

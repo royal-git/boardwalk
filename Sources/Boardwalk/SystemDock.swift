@@ -1,21 +1,23 @@
 import AppKit
-import BetterDockCore
+import BoardwalkCore
 
-/// Talks to Apple's Dock. BetterDock draws its own dock, so Apple's is tucked away
-/// while BetterDock runs: auto-hide on, with a reveal delay so long it never pops
+/// Talks to Apple's Dock. Boardwalk draws its own dock, so Apple's is tucked away
+/// while Boardwalk runs: auto-hide on, with a reveal delay so long it never pops
 /// up. The user's original settings are saved first and put back on quit.
 ///
-/// Changing these settings needs one Dock restart when BetterDock starts and one
+/// Changing these settings needs one Dock restart when Boardwalk starts and one
 /// when it quits. Switching spaces never touches Apple's Dock.
 struct SystemDock {
     private static let domain = DockPlist.domain as CFString
     private static let savedKey = "savedAppleDockSettings"
+    /// Where the app kept the user's settings when it was called BetterDock.
+    private static let legacyDefaults = "com.royal-git.betterdock"
     private static let managedKeys = ["autohide", "autohide-delay"]
 
     /// Hide Apple's Dock, remembering the user's own settings the first time.
     func tuckAway() {
         let defaults = UserDefaults.standard
-        if defaults.dictionary(forKey: Self.savedKey) == nil {
+        if savedSettings() == nil {
             var saved: [String: Any] = [:]
             for key in Self.managedKeys {
                 if let value = CFPreferencesCopyAppValue(key as CFString, Self.domain) {
@@ -34,12 +36,28 @@ struct SystemDock {
     /// Put Apple's Dock back exactly as the user had it.
     func restore() {
         let defaults = UserDefaults.standard
-        guard let saved = defaults.dictionary(forKey: Self.savedKey) else { return }
+        guard let saved = savedSettings() else { return }
         for key in Self.managedKeys {
             set(key, saved[key].map { $0 as AnyObject })
         }
         defaults.removeObject(forKey: Self.savedKey)
         restart()
+    }
+
+    /// The user's own settings, saved when the Dock was first tucked away. Ones
+    /// BetterDock saved and never put back (it didn't get to quit) move over
+    /// here, or tucking the Dock away again would save the hidden Dock as the
+    /// user's, and quitting would leave it hidden.
+    private func savedSettings() -> [String: Any]? {
+        let defaults = UserDefaults.standard
+        if let saved = defaults.dictionary(forKey: Self.savedKey) {
+            return saved
+        }
+        guard let legacy = UserDefaults(suiteName: Self.legacyDefaults),
+              let saved = legacy.dictionary(forKey: Self.savedKey) else { return nil }
+        defaults.set(saved, forKey: Self.savedKey)
+        legacy.removeObject(forKey: Self.savedKey)
+        return saved
     }
 
     /// What is in Apple's Dock right now, for "Copy Apple's Dock into This Desktop".

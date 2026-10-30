@@ -1,6 +1,6 @@
 import AppKit
 import ApplicationServices
-import BetterDockCore
+import BoardwalkCore
 
 /// Maps an Accessibility window to its window number. Private, but it's what
 /// window managers like Rectangle and AltTab use; there's no public equivalent.
@@ -9,7 +9,7 @@ func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CG
 
 /// Moves and resizes other apps' windows through the Accessibility API. macOS only
 /// keeps windows clear of its own Dock, so layouts here use the screen minus the
-/// menu bar and BetterDock's dock.
+/// menu bar and Boardwalk's dock.
 ///
 /// Needs Accessibility permission. macOS asks the first time you arrange a window;
 /// the dock itself works without it.

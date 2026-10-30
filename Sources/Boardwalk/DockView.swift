@@ -1,4 +1,4 @@
-import BetterDockCore
+import BoardwalkCore
 import SwiftUI
 
 /// One desktop's dock: the desktop's badge and dots on the left, then its apps,
@@ -235,7 +235,7 @@ private struct SpaceIndicator: View {
     }
 
     private func label(for space: Space?) -> String {
-        guard let space, let index = model.library.index(of: space.id) else { return "BetterDock" }
+        guard let space, let index = model.library.index(of: space.id) else { return "Boardwalk" }
         return "Desktop \(index + 1): \(space.name)"
     }
 }

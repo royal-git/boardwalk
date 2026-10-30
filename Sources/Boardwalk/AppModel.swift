@@ -1,8 +1,8 @@
 import AppKit
-import BetterDockCore
+import BoardwalkCore
 import SwiftUI
 
-/// One icon in BetterDock's dock.
+/// One icon in Boardwalk's dock.
 struct DockTile: Identifiable {
     let id: String
     let item: DockItem
@@ -76,7 +76,7 @@ final class AppModel: ObservableObject {
     @Published private var launching: [pid_t: (since: Date, watch: NSKeyValueObservation)] = [:]
     @Published var lastError: String?
 
-    private let storage = LibraryStorage()
+    private let storage = LibraryStorage.standard
     private let systemDock = SystemDock()
     private let desktops = Desktops()
     /// One dock per desktop, living on that desktop so it slides in with it. Without
@@ -274,7 +274,7 @@ final class AppModel: ObservableObject {
         }
 
         // Shown on the desktop each came from, or everywhere when that isn't
-        // known, like for one minimized before BetterDock started.
+        // known, like for one minimized before Boardwalk started.
         result.minimized = minimized.compactMap { window in
             guard windows.owners[window.id] != nil,
                   desktopID == Self.allDesktops || (lastDesktop[window.id] ?? desktopID) == desktopID,

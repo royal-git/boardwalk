@@ -5,7 +5,7 @@ import Foundation
 ///
 /// macOS has no public API for this, so it uses the private SkyLight calls that
 /// window managers like yabai rely on. They're looked up at runtime: if a macOS
-/// update removes them, `current()` returns nil and BetterDock falls back to a
+/// update removes them, `current()` returns nil and Boardwalk falls back to a
 /// single dock instead of crashing.
 struct Desktops {
     struct State: Equatable {
@@ -54,7 +54,7 @@ struct Desktops {
 
     var canMoveWindows: Bool { mainConnection != nil && moveWindowsToSpace != nil }
 
-    /// Moves one of BetterDock's own windows to a desktop.
+    /// Moves one of Boardwalk's own windows to a desktop.
     func move(window windowNumber: Int, toDesktop id: Int) {
         guard let mainConnection, let moveWindowsToSpace else { return }
         moveWindowsToSpace(mainConnection(), [windowNumber] as CFArray, UInt64(id))

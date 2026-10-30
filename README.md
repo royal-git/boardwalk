@@ -1,13 +1,13 @@
-# BetterDock
+# Boardwalk
 
-A different dock for each macOS desktop, like Arc's spaces for the Mac dock. Desktop 1 can hold your work apps, folders and links, and Desktop 2 your personal ones. Switch desktops the usual way (four-finger swipe or ⌃← →) and the dock changes with you right away. macOS already keeps each desktop's windows apart, and BetterDock gives each one its own dock to match.
+A different dock for each macOS desktop, like Arc's spaces for the Mac dock. Desktop 1 can hold your work apps, folders and links, and Desktop 2 your personal ones. Switch desktops the usual way (four-finger swipe or ⌃← →) and the dock changes with you right away. macOS already keeps each desktop's windows apart, and Boardwalk gives each one its own dock to match.
 
 ![Desktop 1's dock: pinned apps with pin badges, open apps, and Downloads](docs/dock-desktop-1.png)
 ![Desktop 2's dock, with different apps for that desktop](docs/dock-desktop-2.png)
 
 *Two desktops on one Mac, each with its own dock. A pin badge marks apps kept in that desktop's dock. A filled dot means the app has a window on this desktop, and a hollow dot means it's running without one here.*
 
-BetterDock draws its own dock. It doesn't edit Apple's Dock, because Apple's Dock can only change its icons by restarting, and that makes it blink. Apple's Dock is also the same on every desktop.
+Boardwalk draws its own dock. It doesn't edit Apple's Dock, because Apple's Dock can only change its icons by restarting, and that makes it blink. Apple's Dock is also the same on every desktop.
 
 ## What it does
 
@@ -22,10 +22,10 @@ BetterDock draws its own dock. It doesn't edit Apple's Dock, because Apple's Doc
   - then ↑ or ↓ for the top or bottom half of those columns: ← ↑ is the top-left quarter, ← → ↓ the bottom of the center third
   - ↩ maximize, C center, T tile every window on this desktop
 
-  Moving other apps' windows needs Accessibility permission, which macOS asks for the first time you arrange. Minimized windows and badges need it too; the rest of BetterDock works without it. macOS's own tiling (Fn⌃ arrows, dragging a window to a screen edge) doesn't know about BetterDock and still goes under the dock.
+  Moving other apps' windows needs Accessibility permission, which macOS asks for the first time you arrange. Minimized windows and badges need it too; the rest of Boardwalk works without it. macOS's own tiling (Fn⌃ arrows, dragging a window to a screen edge) doesn't know about Boardwalk and still goes under the dock.
 - **Minimized windows** show at the right end of the dock of the desktop they came from, as a small window with its app's icon in the corner. Hover one for its title; click it to bring the window back.
 - **Opening apps bounce**, as in Apple's Dock, until they've finished launching, whether you opened them from the dock or somewhere else.
-- **Badges** that apps put on their Dock icons, like Mail's unread count, show on their tiles. BetterDock reads them from Apple's Dock, which keeps them while it's hidden.
+- **Badges** that apps put on their Dock icons, like Mail's unread count, show on their tiles. Boardwalk reads them from Apple's Dock, which keeps them while it's hidden.
 - **Pinning.** Right-click a tile and choose **Keep in Dock** to pin it to this desktop's dock, or tick desktops under **Keep in Dock on ▸**, or **All Desktops**. Pinned apps have a small pin badge; apps without one are only there because they're open. Clicking a pinned app launches it, opens a window if it has none, or takes you to its window on another desktop.
 - **Shared items** stay in the dock on every desktop, for example Finder and Downloads.
 - **Drop to add or open.** Drag a file, folder or link onto an app to open it with that app. Drag an app anywhere onto the dock, or anything else between tiles or onto a folder, to add it to this desktop's dock. Right-click a tile to show it in Finder, hide the app or quit it; hold ⌥ to force quit.
@@ -33,13 +33,13 @@ BetterDock draws its own dock. It doesn't edit Apple's Dock, because Apple's Doc
 
 ## How it follows desktops
 
-Each desktop gets its own dock window, which lives on that desktop, so it slides in with the desktop instead of changing after the switch. BetterDock asks macOS which desktops exist and which desktop each window is on, using the private SkyLight calls that window managers like yabai rely on. They're looked up at runtime, so if a macOS update removes them, BetterDock shows one dock for every desktop instead of crashing. Window owners and ids come from the public window list, so it doesn't need Screen Recording permission.
+Each desktop gets its own dock window, which lives on that desktop, so it slides in with the desktop instead of changing after the switch. Boardwalk asks macOS which desktops exist and which desktop each window is on, using the private SkyLight calls that window managers like yabai rely on. They're looked up at runtime, so if a macOS update removes them, Boardwalk shows one dock for every desktop instead of crashing. Window owners and ids come from the public window list, so it doesn't need Screen Recording permission.
 
 ## Apple's Dock
 
-While BetterDock runs, Apple's Dock is set to auto-hide with a very long delay, so it never pops up. BetterDock saves your original settings first. Quitting BetterDock from its menu puts them back. Apple's Dock restarts once when BetterDock starts and once when it quits, but never when you switch desktops.
+While Boardwalk runs, Apple's Dock is set to auto-hide with a very long delay, so it never pops up. Boardwalk saves your original settings first. Quitting Boardwalk from its menu puts them back. Apple's Dock restarts once when Boardwalk starts and once when it quits, but never when you switch desktops.
 
-If BetterDock ever crashes and Apple's Dock stays hidden, run:
+If Boardwalk ever crashes and Apple's Dock stays hidden, run:
 
 ```sh
 defaults delete com.apple.dock autohide-delay && killall Dock
@@ -50,22 +50,22 @@ defaults delete com.apple.dock autohide-delay && killall Dock
 Requires macOS 13 or later and Xcode 15 or later (or the Swift 5.9+ toolchain).
 
 ```sh
-swift run BetterDock          # quick run from the terminal
-./scripts/build-app.sh        # builds BetterDock.app (menu bar only; signed with your Apple Development certificate if you have one, so permissions survive rebuilds)
-open BetterDock.app
+swift run Boardwalk          # quick run from the terminal
+./scripts/build-app.sh        # builds Boardwalk.app (menu bar only; signed with your Apple Development certificate if you have one, so permissions survive rebuilds)
+open Boardwalk.app
 ```
 
 To work in Xcode, run `open Package.swift`.
 
-Your desktop docks are saved as JSON in `~/Library/Application Support/BetterDock/spaces.json`. You can back up or edit that file by hand.
+Your desktop docks are saved as JSON in `~/Library/Application Support/Boardwalk/spaces.json`. You can back up or edit that file by hand.
 
 ## Layout
 
 | Path | What's there |
 | --- | --- |
-| `Sources/BetterDockCore` | Plain Foundation code with no UI. It holds the per-desktop dock model (`Space`, one per desktop), the rule for which open apps show on a desktop, JSON storage, the reader for Apple's Dock format (used by import), and window layouts and arrow combos. |
-| `Sources/BetterDock` | The app. It contains the dock panel and its view, desktop and window tracking (`Desktops.swift`, `MinimizedWindows.swift`), arranging windows (`WindowManager.swift`, `HotKeys.swift`), the menu bar menu, and the editor window. |
-| `Tests/BetterDockCoreTests` | Unit tests for the core, run with `swift test`. |
+| `Sources/BoardwalkCore` | Plain Foundation code with no UI. It holds the per-desktop dock model (`Space`, one per desktop), the rule for which open apps show on a desktop, JSON storage, the reader for Apple's Dock format (used by import), and window layouts and arrow combos. |
+| `Sources/Boardwalk` | The app. It contains the dock panel and its view, desktop and window tracking (`Desktops.swift`, `MinimizedWindows.swift`), arranging windows (`WindowManager.swift`, `HotKeys.swift`), the menu bar menu, and the editor window. |
+| `Tests/BoardwalkCoreTests` | Unit tests for the core, run with `swift test`. |
 
 ## Not yet
 

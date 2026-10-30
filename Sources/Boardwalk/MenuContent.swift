@@ -1,5 +1,5 @@
 import AppKit
-import BetterDockCore
+import BoardwalkCore
 import SwiftUI
 
 /// The menu bar dropdown: which desktop you're on, plus management commands.
@@ -31,7 +31,7 @@ struct MenuContent: View {
 
         Divider()
 
-        Button("Quit BetterDock (brings back Apple's Dock)") {
+        Button("Quit Boardwalk (brings back Apple's Dock)") {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q")

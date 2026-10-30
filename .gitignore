@@ -2,5 +2,5 @@
 .swiftpm/
 *.xcodeproj/
 DerivedData/
-BetterDock.app/
+Boardwalk.app/
 .DS_Store

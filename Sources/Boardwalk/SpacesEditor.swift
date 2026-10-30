@@ -1,9 +1,9 @@
 import AppKit
-import BetterDockCore
+import BoardwalkCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The "BetterDock" window: one row per macOS desktop in the sidebar, the
+/// The "Boardwalk" window: one row per macOS desktop in the sidebar, the
 /// selected desktop's dock items on the right.
 struct SpacesEditor: View {
     static let windowID = "spaces-editor"

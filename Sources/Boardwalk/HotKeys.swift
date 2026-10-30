@@ -1,5 +1,5 @@
 import AppKit
-import BetterDockCore
+import BoardwalkCore
 import Carbon.HIToolbox
 
 /// The arrange shortcuts: hold ⌃⌥ and press arrows to place the front window (see

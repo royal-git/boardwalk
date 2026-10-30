@@ -1,5 +1,5 @@
 import AppKit
-import BetterDockCore
+import BoardwalkCore
 import SwiftUI
 
 extension Color {
